@@ -63,7 +63,7 @@ button { cursor: pointer; }
 .tab:hover { background: var(--surface-alt); color: var(--text); }
 .tab.active { background: var(--accent-soft); color: var(--accent); }
 
-main { padding: 26px clamp(20px, 4vw, 56px) 110px; }
+main { padding: 26px clamp(20px, 4vw, 56px) 42px; }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 .grid.two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
@@ -607,3 +607,56 @@ thead .material-col { z-index: 6; background: #f8fafc; }
 .auth-locked .tabs,
 .auth-locked main,
 .auth-locked footer { pointer-events: none; user-select: none; }
+\n\n/* V0.9 filtered materials, entry history and no fixed JSON dock */
+.filtered-warning {
+  margin: 12px 14px 0;
+  padding: 11px 12px;
+  border: 1px solid #efcf96;
+  border-radius: 10px;
+  background: var(--warning-soft);
+  color: #74410a;
+}
+.filtered-warning-title { font-size: 12px; font-weight: 850; }
+.filtered-warning-copy { margin-top: 2px; font-size: 11px; line-height: 1.4; color: #8a5418; }
+.filtered-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(161, 92, 0, .18);
+  font-size: 11px;
+}
+.filtered-item span { min-width: 0; overflow-wrap: anywhere; }
+.filtered-item strong { white-space: nowrap; }
+.history-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(180px, .8fr) minmax(180px, .8fr) 160px auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.history-filters select {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 10px 11px;
+  color: var(--text);
+  background: white;
+}
+.history-clear { align-self: end; }
+.entry-history-table { width: 100%; min-width: 1120px; }
+.entry-history-table th, .entry-history-table td { text-align: left; vertical-align: top; white-space: normal; }
+.entry-history-table th { white-space: nowrap; }
+.entry-history-table .history-time { width: 170px; white-space: nowrap; }
+.entry-history-table .history-project { min-width: 210px; }
+.entry-history-table .history-details { min-width: 360px; color: #475467; }
+.history-empty { padding: 42px 20px; text-align: center; color: var(--muted); }
+@media (max-width: 1000px) {
+  .history-filters { grid-template-columns: 1fr 1fr; }
+  .history-clear { justify-self: start; }
+}
+@media (max-width: 620px) {
+  .history-filters { grid-template-columns: 1fr; }
+}

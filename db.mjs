@@ -52,6 +52,13 @@ export async function loadCloudRows() {
   return { projects: projects || [], levels: levels || [], materials: materials || [], deliveries: deliveries || [] };
 }
 
+
+export async function loadActivityRows({ limit = 750 } = {}) {
+  return request("activity_log", {
+    params: { select: "*", order: "created_at.desc", limit: String(limit) }
+  });
+}
+
 export async function insertRows(table, rows) {
   const payload = Array.isArray(rows) ? rows : [rows];
   if (!payload.length) return [];

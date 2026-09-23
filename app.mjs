@@ -1,11 +1,11 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
-import { AUTO_REFRESH_MS } from "./config.mjs";
-import { loadCloudRows, insertRows, updateRows, deleteRows, logActivity } from "./db.mjs";
+import { loadCloudRows, loadActivityRows, insertRows, updateRows, deleteRows, logActivity } from "./db.mjs";
 import { restoreSession, signInWithPassword, signOut, getCurrentUser, getLastEmail } from "./auth.mjs";
+import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs";
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 const EPSILON = 0.0001;
 
 let state = { version: SCHEMA_VERSION, projects: [] };
@@ -20,6 +20,11 @@ let lastSyncAt = null;
 let uiPrefs = loadUiPrefs();
 let currentUserName = "";
 let loginResolve = null;
+let activityRows = [];
+let historyLoaded = false;
+let realtimeRefreshTimer = null;
+let historyRefreshTimer = null;
+let realtimeState = "starting";
 
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID();
@@ -45,8 +50,29 @@ function activityDetails(details = {}) {
   };
 }
 
+function activityContext(entityType, entityId) {
+  if (entityType === "project") {
+    const project = state.projects.find(item => item.id === entityId);
+    return project ? {
+      project_number: project.projectNumber || "",
+      address_project_name: project.address || ""
+    } : {};
+  }
+  if (entityType === "level") {
+    for (const project of state.projects) {
+      const level = (project.levels || []).find(item => item.id === entityId);
+      if (level) return {
+        project_number: project.projectNumber || "",
+        address_project_name: project.address || "",
+        level_name: level.name || ""
+      };
+    }
+  }
+  return {};
+}
+
 async function recordActivity(entityType, entityId, action, details = {}) {
-  return logActivity(entityType, entityId, action, activityDetails(details));
+  return logActivity(entityType, entityId, action, activityDetails({ ...activityContext(entityType, entityId), ...details }));
 }
 
 function setLoginError(message = "") {
@@ -282,7 +308,9 @@ async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
     const rows = await loadCloudRows();
     state = mapCloudRows(rows);
     lastSyncAt = new Date();
-    setCloudStatus("connected", "Shared data connected");
+    if (realtimeState === "error") setCloudStatus("connecting", "Shared data connected · live sync unavailable");
+    else if (realtimeState === "connected") setCloudStatus("connected", "Shared data connected · live");
+    else setCloudStatus("connected", "Shared data connected");
     renderAll();
 
     if (deliveryIds) {
@@ -323,6 +351,7 @@ async function loadPdfJs() {
 function setTab(tabName) {
   document.querySelectorAll(".tab").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === tabName));
   document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.toggle("active", panel.id === tabName));
+  if (tabName === "history") loadAndRenderHistory();
 }
 
 function todayIso() {
@@ -476,6 +505,7 @@ async function handlePdf(file) {
         name: level.name,
         estimatedDeliveryDate: useProjectDate ? ($("projectDate").value || "") : "",
         materials: level.materials.map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
+        filteredMaterials: (level.filteredMaterials || []).map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
         deliveries: []
       }))
     };
@@ -486,8 +516,9 @@ async function handlePdf(file) {
     $("sales").value = draft.sales;
     $("address").value = draft.address;
     $("reviewCard").classList.remove("hidden");
-    status.className = "status success";
-    status.textContent = `Read ${draft.levels.length} level${draft.levels.length === 1 ? "" : "s"} and ${draft.levels.reduce((n, level) => n + level.materials.length, 0)} Total Length material lines.`;
+    const filteredCount = draft.levels.reduce((n, level) => n + (level.filteredMaterials || []).length, 0);
+    status.className = filteredCount ? "status warning" : "status success";
+    status.textContent = `Read ${draft.levels.length} level${draft.levels.length === 1 ? "" : "s"} and ${draft.levels.reduce((n, level) => n + level.materials.length, 0)} included Total Length material lines.${filteredCount ? ` ${filteredCount} Web Stiffener line${filteredCount === 1 ? " was" : "s were"} filtered out by default; review the warning below to add any back.` : ""}`;
     renderDraftLevels();
   } catch (error) {
     console.error(error);
@@ -510,6 +541,17 @@ function renderDraftLevels() {
         </label>
         <button class="button ghost remove-level" data-level-index="${levelIndex}" type="button">Remove Level</button>
       </div>
+      ${(level.filteredMaterials || []).length ? `
+      <div class="filtered-warning">
+        <div class="filtered-warning-title">⚠ Web Stiffener filtered out by default</div>
+        <div class="filtered-warning-copy">These Total Length entries will not affect the forecast unless you add them back.</div>
+        ${(level.filteredMaterials || []).map((item, filteredIndex) => `
+          <div class="filtered-item">
+            <span>${escapeHtml(item.material)}</span>
+            <strong>${formatNumber(item.requiredLf)} LF</strong>
+            <button type="button" class="mini-button restore-filtered" data-level-index="${levelIndex}" data-filtered-index="${filteredIndex}">Add</button>
+          </div>`).join("")}
+      </div>` : ""}
       <div class="material-list">
         <div class="material-head"><span>Material</span><span>Total Length (LF)</span><span></span></div>
         ${level.materials.map((material, materialIndex) => `
@@ -696,7 +738,7 @@ async function saveDraftProject() {
     };
     const newProjectId = await createProjectGraph(projectRecord);
     if (existing) await deleteRows("projects", { id: `eq.${existing.id}` });
-    await recordActivity("project", newProjectId, existing ? "replace_project" : "create_project", { project_number: draft.projectNumber, revision: draft.revision });
+    await recordActivity("project", newProjectId, existing ? "replace_project" : "create_project", { project_number: draft.projectNumber, revision: draft.revision, address_project_name: draft.address, customer: draft.customer, sales: draft.sales });
     setProjectCollapsed(newProjectId, draft.levels.length > 1);
     resetIntake();
     await syncFromCloud({ silent: true });
@@ -814,6 +856,19 @@ async function saveProjectEdit() {
   const duplicate = state.projects.find(item => item.id !== projectId && item.projectNumber.toLowerCase() === projectNumber.toLowerCase());
   if (duplicate) return alert(`Project # ${projectNumber} already exists.`);
 
+  const fieldChanges = {};
+  const compared = [
+    ["Project #", activeEditProject.projectNumber || "", projectNumber],
+    ["Revision", activeEditProject.revision || "", revision],
+    ["Customer", activeEditProject.customer || "", customer],
+    ["Sales", activeEditProject.sales || "", sales],
+    ["Address (Project Name)", activeEditProject.address || "", address],
+    ["Project default delivery date", activeEditProject.defaultEstimatedDeliveryDate || "", defaultDate]
+  ];
+  for (const [label, from, to] of compared) {
+    if (String(from) !== String(to)) fieldChanges[label] = { from, to };
+  }
+
   const button = $("saveProjectEdit");
   button.disabled = true;
   button.textContent = "Saving…";
@@ -841,7 +896,7 @@ async function saveProjectEdit() {
       }
     }
 
-    await recordActivity("project", projectId, "update_project", { project_number: projectNumber, apply_date_to_all_levels: applyAll });
+    await recordActivity("project", projectId, "update_project", { project_number: projectNumber, address_project_name: address, changes: fieldChanges, apply_date_to_all_levels: applyAll });
     $("projectEditDialog").close("saved");
     activeEditProject = null;
     await syncFromCloud({ silent: true });
@@ -958,17 +1013,200 @@ function renderForecast() {
   empty.classList.add("hidden");
 }
 
-function renderStorageSummary() {
-  const levels = allLevels().length;
-  $("storageSummary").textContent = `${state.projects.length} project${state.projects.length === 1 ? "" : "s"}, ${levels} level${levels === 1 ? "" : "s"} in shared cloud data · synced ${formatSyncTime(lastSyncAt)}.`;
-  const legacy = readLegacyBrowserData();
-  $("importLocalData").classList.toggle("hidden", !(legacy?.projects?.length));
+function formatDateTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+  }).format(date);
+}
+
+const ACTIVITY_LABELS = {
+  create_project: "Project added",
+  replace_project: "Project replaced",
+  import_project: "Project imported",
+  update_project: "Project edited",
+  update_forecast_date: "Delivery date changed",
+  record_delivery: "Delivery recorded",
+  undo_delivery: "Delivery undone",
+  remove_level: "Level removed"
+};
+
+function actionLabel(action) {
+  return ACTIVITY_LABELS[action] || String(action || "Activity").replaceAll("_", " ");
+}
+
+function activityEntityContext(row) {
+  const details = row?.details && typeof row.details === "object" ? row.details : {};
+  let projectNumber = details.project_number || "";
+  let address = details.address_project_name || "";
+  let levelName = details.level_name || "";
+
+  if (row.entity_type === "project") {
+    const project = state.projects.find(item => item.id === row.entity_id);
+    if (project) {
+      projectNumber ||= project.projectNumber || "";
+      address ||= project.address || "";
+    }
+  } else if (row.entity_type === "level") {
+    for (const project of state.projects) {
+      const level = (project.levels || []).find(item => item.id === row.entity_id);
+      if (!level) continue;
+      projectNumber ||= project.projectNumber || "";
+      address ||= project.address || "";
+      levelName ||= level.name || "";
+      break;
+    }
+  }
+  return { projectNumber, address, levelName };
+}
+
+function activityDetailText(row) {
+  const d = row?.details && typeof row.details === "object" ? row.details : {};
+  if (row.action === "record_delivery") {
+    const items = Array.isArray(d.items) ? d.items.map(item => `${item.material}: ${formatNumber(item.lf)} LF`).join("; ") : "";
+    return [d.delivery_date ? `Delivery ${formatDate(d.delivery_date)}` : "", items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ") || "Delivery recorded";
+  }
+  if (row.action === "undo_delivery") return d.delivery_date ? `Reversed delivery dated ${formatDate(d.delivery_date)}` : "Delivery quantities restored";
+  if (row.action === "update_forecast_date") return `${formatDate(d.from)} → ${formatDate(d.to)}`;
+  if (row.action === "remove_level") return d.level_name ? `Removed ${d.level_name}` : "Level removed";
+  if (row.action === "update_project") {
+    const changes = d.changes && typeof d.changes === "object" ? Object.entries(d.changes) : [];
+    const text = changes.map(([field, values]) => `${field}: ${values?.from || "—"} → ${values?.to || "—"}`).join("; ");
+    const applied = d.apply_date_to_all_levels ? "Applied default date to all levels" : "";
+    return [text, applied].filter(Boolean).join(" · ") || "Project fields updated";
+  }
+  if (["create_project", "replace_project", "import_project"].includes(row.action)) {
+    return [d.revision ? `Revision ${d.revision}` : "", d.customer ? `Customer: ${d.customer}` : "", d.sales ? `Sales: ${d.sales}` : "", d.source ? `Source: ${d.source}` : ""].filter(Boolean).join(" · ") || actionLabel(row.action);
+  }
+  return Object.keys(d).length ? JSON.stringify(d) : "—";
+}
+
+function populateHistoryFilters() {
+  const userSelect = $("historyUserFilter");
+  const actionSelect = $("historyActionFilter");
+  if (!userSelect || !actionSelect) return;
+  const currentUser = userSelect.value;
+  const currentAction = actionSelect.value;
+  const users = [...new Set(activityRows.map(row => row.details?.actor_email || row.details?.actor_name || "").filter(Boolean))].sort();
+  const actions = [...new Set(activityRows.map(row => row.action).filter(Boolean))].sort((a, b) => actionLabel(a).localeCompare(actionLabel(b)));
+  userSelect.innerHTML = `<option value="">All users</option>${users.map(user => `<option value="${escapeHtml(user)}">${escapeHtml(user)}</option>`).join("")}`;
+  actionSelect.innerHTML = `<option value="">All actions</option>${actions.map(action => `<option value="${escapeHtml(action)}">${escapeHtml(actionLabel(action))}</option>`).join("")}`;
+  if (users.includes(currentUser)) userSelect.value = currentUser;
+  if (actions.includes(currentAction)) actionSelect.value = currentAction;
+}
+
+function renderHistory() {
+  const wrap = $("historyWrap");
+  const status = $("historyStatus");
+  if (!wrap || !status) return;
+  populateHistoryFilters();
+  const query = normalizeSpaces($("historySearch")?.value || "").toLowerCase();
+  const user = $("historyUserFilter")?.value || "";
+  const action = $("historyActionFilter")?.value || "";
+  const date = $("historyDateFilter")?.value || "";
+
+  const filtered = activityRows.filter(row => {
+    const actor = row.details?.actor_email || row.details?.actor_name || "Unknown user";
+    if (user && actor !== user) return false;
+    if (action && row.action !== action) return false;
+    if (date && String(row.created_at || "").slice(0, 10) !== date) return false;
+    if (query) {
+      const ctx = activityEntityContext(row);
+      const haystack = [actor, row.action, actionLabel(row.action), ctx.projectNumber, ctx.address, ctx.levelName, activityDetailText(row)].join(" ").toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+
+  status.textContent = `${filtered.length} entr${filtered.length === 1 ? "y" : "ies"}${filtered.length !== activityRows.length ? ` shown from ${activityRows.length}` : ""}. History is read-only.`;
+  if (!filtered.length) {
+    wrap.innerHTML = `<div class="history-empty">No entry history matches the current filters.</div>`;
+    wrap.classList.remove("hidden");
+    return;
+  }
+
+  const rows = filtered.map(row => {
+    const actor = row.details?.actor_email || row.details?.actor_name || "Unknown user";
+    const ctx = activityEntityContext(row);
+    const project = [ctx.projectNumber, ctx.address].filter(Boolean).join(" · ") || "—";
+    const level = ctx.levelName || "—";
+    return `<tr>
+      <td class="history-time">${escapeHtml(formatDateTime(row.created_at))}</td>
+      <td>${escapeHtml(actor)}</td>
+      <td class="history-project">${escapeHtml(project)}</td>
+      <td>${escapeHtml(level)}</td>
+      <td><strong>${escapeHtml(actionLabel(row.action))}</strong></td>
+      <td class="history-details">${escapeHtml(activityDetailText(row))}</td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table class="entry-history-table"><thead><tr><th>Date / Time</th><th>User</th><th>Project</th><th>Level</th><th>Action</th><th>Details</th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.classList.remove("hidden");
+}
+
+async function loadAndRenderHistory({ silent = false } = {}) {
+  const status = $("historyStatus");
+  if (!status) return;
+  if (!silent) status.textContent = "Loading entry history…";
+  try {
+    activityRows = (await loadActivityRows({ limit: 750 })) || [];
+    historyLoaded = true;
+    renderHistory();
+  } catch (error) {
+    console.error("Could not load entry history", error);
+    status.textContent = `Could not load entry history: ${error.message}`;
+  }
+}
+
+function scheduleRealtimeDataRefresh() {
+  if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
+  setCloudStatus("connecting", "Syncing shared data…");
+  realtimeRefreshTimer = setTimeout(async () => {
+    realtimeRefreshTimer = null;
+    await syncFromCloud({ silent: true, rebindActive: hasOpenDialog() });
+  }, 550);
+}
+
+function scheduleHistoryRefresh() {
+  if (!historyLoaded && !document.getElementById("history")?.classList.contains("active")) return;
+  if (historyRefreshTimer) clearTimeout(historyRefreshTimer);
+  historyRefreshTimer = setTimeout(() => {
+    historyRefreshTimer = null;
+    loadAndRenderHistory({ silent: true });
+  }, 450);
+}
+
+async function startLiveSync() {
+  realtimeState = "starting";
+  const started = await startRealtime({
+    onChange: ({ table }) => {
+      if (table === "activity_log") {
+        scheduleHistoryRefresh();
+        return;
+      }
+      scheduleRealtimeDataRefresh();
+    },
+    onStatus: status => {
+      if (status === "SUBSCRIBED") {
+        realtimeState = "connected";
+        setCloudStatus("connected", "Shared data connected · live");
+      } else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+        realtimeState = "error";
+        setCloudStatus("connecting", "Shared data connected · live sync unavailable");
+      }
+    }
+  });
+  if (!started) {
+    realtimeState = "error";
+    setCloudStatus("connecting", "Shared data connected · live sync unavailable");
+  }
 }
 
 function renderAll() {
   renderMatrix();
   renderForecast();
-  renderStorageSummary();
+  if (document.getElementById("history")?.classList.contains("active") && historyLoaded) renderHistory();
 }
 
 function openDelivery(projectId, levelId) {
@@ -1308,6 +1546,7 @@ function wireEvents() {
   });
   $("signOutButton").addEventListener("click", async () => {
     if (!confirm("Sign out of EWP Material Forecast?")) return;
+    await stopRealtime();
     await signOut();
     currentUserName = "";
     renderCurrentUser();
@@ -1318,6 +1557,7 @@ function wireEvents() {
     if (session?.user) {
       setCloudStatus("connecting", "Connecting to shared data…");
       await syncFromCloud();
+      await startLiveSync();
     }
   });
   document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => setTab(button.dataset.tab)));
@@ -1365,6 +1605,7 @@ function wireEvents() {
       name: `Level ${draft.levels.length + 1}`,
       estimatedDeliveryDate: $("applyDateAll").checked ? $("projectDate").value : "",
       materials: [{ id: uid(), material: "", requiredLf: 0 }],
+      filteredMaterials: [],
       deliveries: []
     });
     renderDraftLevels();
@@ -1377,6 +1618,11 @@ function wireEvents() {
     const levelIndex = Number(button.dataset.levelIndex);
     if (button.classList.contains("remove-level")) {
       draft.levels.splice(levelIndex, 1);
+      renderDraftLevels();
+    } else if (button.classList.contains("restore-filtered")) {
+      const filteredIndex = Number(button.dataset.filteredIndex);
+      const item = draft.levels[levelIndex].filteredMaterials?.splice(filteredIndex, 1)?.[0];
+      if (item) draft.levels[levelIndex].materials.push(item);
       renderDraftLevels();
     } else if (button.classList.contains("add-material")) {
       draft.levels[levelIndex].materials.push({ id: uid(), material: "", requiredLf: 0 });
@@ -1460,37 +1706,29 @@ function wireEvents() {
 
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);
-  $("exportBackup").addEventListener("click", () => downloadText(`ewp-forecast-shared-backup-${todayIso()}.json`, JSON.stringify(cleanBackupState(), null, 2), "application/json"));
-  $("importLocalData").addEventListener("click", importLegacyBrowserData);
-
-  $("importBackup").addEventListener("change", async event => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const normalized = normalizeBackup(JSON.parse(await file.text()));
-      if (!normalized) throw new Error("This is not a compatible EWP Forecast backup.");
-      await importProjectsToCloud(normalized, file.name);
-    } catch (error) {
-      console.error(error);
-      alert(error.message || "Could not import backup.");
-    } finally {
-      event.target.value = "";
+  $("refreshHistory").addEventListener("click", () => loadAndRenderHistory());
+  ["historySearch", "historyUserFilter", "historyActionFilter", "historyDateFilter"].forEach(id => {
+    $(id).addEventListener(id === "historySearch" ? "input" : "change", renderHistory);
+  });
+  $("clearHistoryFilters").addEventListener("click", () => {
+    $("historySearch").value = "";
+    $("historyUserFilter").value = "";
+    $("historyActionFilter").value = "";
+    $("historyDateFilter").value = "";
+    renderHistory();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !hasOpenDialog()) {
+      refreshRealtimeAuth().catch(() => {});
+      syncFromCloud({ silent: true });
     }
   });
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && !hasOpenDialog()) syncFromCloud({ silent: true });
-  });
   window.addEventListener("focus", () => {
-    if (!hasOpenDialog()) syncFromCloud({ silent: true });
+    if (!hasOpenDialog()) {
+      refreshRealtimeAuth().catch(() => {});
+      syncFromCloud({ silent: true });
+    }
   });
-}
-
-function startAutoRefresh() {
-  setInterval(() => {
-    if (document.visibilityState !== "visible" || hasOpenDialog() || syncInProgress) return;
-    syncFromCloud({ silent: true });
-  }, AUTO_REFRESH_MS);
 }
 
 async function init() {
@@ -1503,7 +1741,7 @@ async function init() {
     if (!session?.user) throw new Error("Authentication did not return a signed-in user.");
     setCloudStatus("connecting", "Connecting to shared data…");
     await syncFromCloud();
-    startAutoRefresh();
+    await startLiveSync();
   } catch (error) {
     console.error("EWP Forecast startup failed", error);
     setCloudStatus("error", "Sign-in required");

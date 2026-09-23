@@ -142,6 +142,16 @@ function dedupeAndAggregateMaterials(materials) {
   return [...map.values()].filter(item => item.requiredLf > 0);
 }
 
+function splitDefaultFilteredMaterials(materials) {
+  const included = [];
+  const filteredMaterials = [];
+  for (const item of materials) {
+    if (/\bweb\s+stiffeners?\b/i.test(item.material || "")) filteredMaterials.push(item);
+    else included.push(item);
+  }
+  return { included, filteredMaterials };
+}
+
 export function parseMaterialReportLines(linesInput, filename = "") {
   const lines = linesInput.map(normalizeSpaces).filter(Boolean);
   const meta = extractProjectMeta(lines, filename);
@@ -172,7 +182,9 @@ export function parseMaterialReportLines(linesInput, filename = "") {
     }
 
     if (materials.length) {
-      levels.push({ name: levelPositions[i].name, materials: dedupeAndAggregateMaterials(materials) });
+      const aggregated = dedupeAndAggregateMaterials(materials);
+      const { included, filteredMaterials } = splitDefaultFilteredMaterials(aggregated);
+      levels.push({ name: levelPositions[i].name, materials: included, filteredMaterials });
     }
   }
 
@@ -187,7 +199,11 @@ export function parseMaterialReportLines(linesInput, filename = "") {
         const parsed = parseTotalLengthLine(line);
         if (parsed) materials.push(parsed);
       }
-      if (materials.length) levels.push({ name: "Level 1", materials: dedupeAndAggregateMaterials(materials) });
+      if (materials.length) {
+        const aggregated = dedupeAndAggregateMaterials(materials);
+        const { included, filteredMaterials } = splitDefaultFilteredMaterials(aggregated);
+        levels.push({ name: "Level 1", materials: included, filteredMaterials });
+      }
     }
   }
 
