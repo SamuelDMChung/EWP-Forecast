@@ -1,68 +1,293 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
+import { AUTO_REFRESH_MS } from "./config.mjs";
+import { loadCloudRows, insertRows, updateRows, deleteRows, logActivity } from "./db.mjs";
 
-const STORAGE_KEY = "ewp_forecast_v2"; // Keep the old key so existing browser data migrates in place.
-const SCHEMA_VERSION = 4;
+const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
+const UI_PREFS_KEY = "ewp_forecast_v06_ui";
+const USER_NAME_KEY = "ewp_forecast_user_name";
+const SCHEMA_VERSION = 7;
 const EPSILON = 0.0001;
 
-let state = loadState();
+let state = { version: SCHEMA_VERSION, projects: [] };
 let draft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
 let activeEditProject = null;
 let matrixScrollLeft = 0;
 let matrixScrollTop = 0;
+let syncInProgress = false;
+let lastSyncAt = null;
+let uiPrefs = loadUiPrefs();
+let currentUserName = loadUserName();
+let identityDialogRequired = false;
+let identityResolve = null;
 
 const $ = id => document.getElementById(id);
-const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+const uid = () => crypto.randomUUID();
 
-function migrateState(parsed) {
+function loadUserName() {
+  try {
+    return normalizeSpaces(localStorage.getItem(USER_NAME_KEY) || "");
+  } catch (error) {
+    console.warn("Could not load local user name", error);
+    return "";
+  }
+}
+
+function saveUserName(name) {
+  currentUserName = normalizeSpaces(name);
+  try {
+    localStorage.setItem(USER_NAME_KEY, currentUserName);
+  } catch (error) {
+    console.warn("Could not save local user name", error);
+  }
+  renderCurrentUser();
+}
+
+function renderCurrentUser() {
+  const label = $("currentUserName");
+  if (label) label.textContent = currentUserName || "User not set";
+}
+
+function activityDetails(details = {}) {
+  return { ...details, actor_name: currentUserName || "Unknown user" };
+}
+
+async function recordActivity(entityType, entityId, action, details = {}) {
+  return logActivity(entityType, entityId, action, activityDetails(details));
+}
+
+function openIdentityDialog({ required = false } = {}) {
+  const dialog = $("identityDialog");
+  identityDialogRequired = required;
+  $("identityCancel").classList.toggle("hidden", required);
+  $("identityName").value = currentUserName || "";
+  $("identityHelp").textContent = required
+    ? "Enter your name once on this browser. It will be attached to shared edit-history entries."
+    : "Future shared edit-history entries from this browser will use this name.";
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => {
+    $("identityName").focus();
+    $("identityName").select();
+  });
+  return new Promise(resolve => { identityResolve = resolve; });
+}
+
+function finishIdentityDialog(name) {
+  saveUserName(name);
+  const dialog = $("identityDialog");
+  if (dialog.open) dialog.close("saved");
+  const resolve = identityResolve;
+  identityResolve = null;
+  identityDialogRequired = false;
+  if (resolve) resolve(currentUserName);
+}
+
+function loadUiPrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(UI_PREFS_KEY) || "null");
+    if (parsed && typeof parsed === "object") return { collapsed: parsed.collapsed || {} };
+  } catch (error) {
+    console.warn("Could not load UI preferences", error);
+  }
+  return { collapsed: {} };
+}
+
+function saveUiPrefs() {
+  localStorage.setItem(UI_PREFS_KEY, JSON.stringify(uiPrefs));
+}
+
+function isProjectCollapsed(project) {
+  if ((project.levels || []).length <= 1) return false;
+  if (Object.prototype.hasOwnProperty.call(uiPrefs.collapsed, project.id)) return Boolean(uiPrefs.collapsed[project.id]);
+  return true;
+}
+
+function setProjectCollapsed(projectId, collapsed) {
+  uiPrefs.collapsed[projectId] = Boolean(collapsed);
+  saveUiPrefs();
+}
+
+function migrateLegacyState(parsed) {
   if (!parsed || !Array.isArray(parsed.projects)) return null;
   if (![2, 3, 4].includes(Number(parsed.version))) return null;
-
   return {
     version: SCHEMA_VERSION,
     projects: parsed.projects.map(project => ({
-      ...project,
       id: project.id || uid(),
       projectNumber: project.projectNumber || "",
       revision: project.revision || "",
       customer: project.customer || "",
       sales: project.sales || "",
       address: project.address || "",
-      collapsed: Boolean(project.collapsed),
       defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate || "",
-      levels: (project.levels || []).map(level => ({
-        ...level,
+      sourceFileName: project.sourceFileName || "",
+      createdAt: project.createdAt || new Date().toISOString(),
+      updatedAt: project.updatedAt || new Date().toISOString(),
+      version: Number(project.version || 1),
+      levels: (project.levels || []).map((level, levelIndex) => ({
         id: level.id || uid(),
+        name: level.name || `Level ${levelIndex + 1}`,
         estimatedDeliveryDate: level.estimatedDeliveryDate || "",
+        displayOrder: Number(level.displayOrder ?? levelIndex),
+        version: Number(level.version || 1),
         materials: (level.materials || []).map(material => ({
+          id: material.id || uid(),
           material: material.material || "",
-          requiredLf: Number(material.requiredLf || 0)
+          requiredLf: Number(material.requiredLf || 0),
+          version: Number(material.version || 1)
         })),
-        deliveries: Array.isArray(level.deliveries) ? level.deliveries : []
+        deliveries: Array.isArray(level.deliveries) ? level.deliveries.map(delivery => ({
+          id: delivery.id || uid(),
+          date: delivery.date || "",
+          note: delivery.note || "",
+          createdAt: delivery.createdAt || new Date().toISOString(),
+          items: (delivery.items || []).map(item => ({
+            material: item.material || "",
+            materialId: item.materialId || "",
+            lf: Number(item.lf || 0)
+          }))
+        })) : []
       }))
     }))
   };
 }
 
-function loadState() {
+function readLegacyBrowserData() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    const migrated = migrateState(parsed);
-    if (migrated) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-      return migrated;
-    }
-  } catch (error) {
-    console.warn("Could not load saved state", error);
+    return migrateLegacyState(JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "null"));
+  } catch {
+    return null;
   }
-  return { version: SCHEMA_VERSION, projects: [] };
 }
 
-function persist() {
-  state.version = SCHEMA_VERSION;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  renderAll();
+function setCloudStatus(kind, text) {
+  const pill = $("cloudPill");
+  pill.className = `cloud-pill ${kind}`;
+  pill.textContent = text;
+}
+
+function formatSyncTime(date) {
+  if (!date) return "not synced yet";
+  return new Intl.DateTimeFormat("en-CA", { hour: "numeric", minute: "2-digit", second: "2-digit" }).format(date);
+}
+
+function mapCloudRows(rows) {
+  const projectMap = new Map();
+  for (const row of rows.projects || []) {
+    projectMap.set(row.id, {
+      id: row.id,
+      projectNumber: row.project_number || "",
+      revision: row.revision || "",
+      customer: row.customer || "",
+      sales: row.sales || "",
+      address: row.address_project_name || "",
+      defaultEstimatedDeliveryDate: row.default_delivery_date || "",
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || "",
+      version: Number(row.version || 1),
+      levels: []
+    });
+  }
+
+  const levelMap = new Map();
+  for (const row of rows.levels || []) {
+    const project = projectMap.get(row.project_id);
+    if (!project) continue;
+    const level = {
+      id: row.id,
+      projectId: row.project_id,
+      name: row.level_name || "",
+      estimatedDeliveryDate: row.estimated_delivery_date || "",
+      displayOrder: Number(row.display_order || 0),
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || "",
+      version: Number(row.version || 1),
+      materials: [],
+      deliveries: []
+    };
+    levelMap.set(level.id, level);
+    project.levels.push(level);
+  }
+
+  const materialMap = new Map();
+  for (const row of rows.materials || []) {
+    const level = levelMap.get(row.level_id);
+    if (!level) continue;
+    const material = {
+      id: row.id,
+      levelId: row.level_id,
+      material: row.material_name || "",
+      requiredLf: Number(row.original_lf || 0),
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || "",
+      version: Number(row.version || 1)
+    };
+    materialMap.set(material.id, material);
+    level.materials.push(material);
+  }
+
+  // Rows written together share the exact delivered_at timestamp and note, so they reconstruct one delivery batch.
+  const batches = new Map();
+  for (const row of rows.deliveries || []) {
+    const level = levelMap.get(row.level_id);
+    const material = materialMap.get(row.material_id);
+    if (!level || !material) continue;
+    const key = `${row.level_id}|${row.delivered_at || ""}|${row.note || ""}`;
+    let batch = batches.get(key);
+    if (!batch) {
+      batch = {
+        id: row.id,
+        rowIds: [],
+        date: (row.delivered_at || "").slice(0, 10),
+        deliveredAt: row.delivered_at || "",
+        note: row.note || "",
+        createdAt: row.created_at || row.delivered_at || "",
+        items: []
+      };
+      batches.set(key, batch);
+      level.deliveries.push(batch);
+    }
+    batch.rowIds.push(row.id);
+    batch.items.push({ materialId: material.id, material: material.material, lf: Number(row.delivered_lf || 0) });
+  }
+
+  const projects = [...projectMap.values()];
+  projects.forEach(project => project.levels.sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name, undefined, { numeric: true })));
+  return { version: SCHEMA_VERSION, projects };
+}
+
+function hasOpenDialog() {
+  return $("deliveryDialog")?.open || $("projectEditDialog")?.open || $("identityDialog")?.open;
+}
+
+async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
+  if (syncInProgress) return;
+  syncInProgress = true;
+  if (!silent) setCloudStatus("connecting", "Refreshing shared data…");
+  const deliveryIds = rebindActive && activeDelivery ? { projectId: activeDelivery.project.id, levelId: activeDelivery.level.id } : null;
+  const editProjectId = rebindActive && activeEditProject ? activeEditProject.id : null;
+
+  try {
+    const rows = await loadCloudRows();
+    state = mapCloudRows(rows);
+    lastSyncAt = new Date();
+    setCloudStatus("connected", "Shared data connected");
+    renderAll();
+
+    if (deliveryIds) {
+      const project = state.projects.find(item => item.id === deliveryIds.projectId);
+      const level = project?.levels.find(item => item.id === deliveryIds.levelId);
+      activeDelivery = project && level ? { project, level } : null;
+    }
+    if (editProjectId) activeEditProject = state.projects.find(item => item.id === editProjectId) || null;
+  } catch (error) {
+    console.error(error);
+    setCloudStatus("error", "Shared data unavailable");
+    if (!silent) alert(`Could not load shared data.\n\n${error.message}`);
+  } finally {
+    syncInProgress = false;
+  }
 }
 
 async function loadPdfJs() {
@@ -111,24 +336,18 @@ function formatDate(date) {
   return new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", year: "numeric" }).format(new Date(y, m - 1, d));
 }
 
-function monthKey(date) {
-  return date ? date.slice(0, 7) : "";
-}
-
+function monthKey(date) { return date ? date.slice(0, 7) : ""; }
 function monthLabel(key) {
   const [y, m] = key.split("-").map(Number);
   return new Intl.DateTimeFormat("en-CA", { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
 }
-
-function normalizeMaterialKey(material) {
-  return normalizeSpaces(material).toLowerCase();
-}
+function normalizeMaterialKey(material) { return normalizeSpaces(material).toLowerCase(); }
 
 function deliveryTotals(level) {
   const totals = new Map();
   for (const delivery of level.deliveries || []) {
     for (const item of delivery.items || []) {
-      const key = normalizeMaterialKey(item.material);
+      const key = item.materialId ? `id:${item.materialId}` : `name:${normalizeMaterialKey(item.material)}`;
       totals.set(key, (totals.get(key) || 0) + Number(item.lf || 0));
     }
   }
@@ -136,8 +355,8 @@ function deliveryTotals(level) {
 }
 
 function outstandingFor(level, material) {
-  const key = normalizeMaterialKey(material.material);
-  const delivered = deliveryTotals(level).get(key) || 0;
+  const totals = deliveryTotals(level);
+  const delivered = totals.get(`id:${material.id}`) ?? totals.get(`name:${normalizeMaterialKey(material.material)}`) ?? 0;
   return Math.max(0, Number(material.requiredLf || 0) - delivered);
 }
 
@@ -159,7 +378,6 @@ function projectStats(project) {
   let delivered = 0;
   let outstanding = 0;
   const incompleteLevels = [];
-
   (project.levels || []).forEach((level, index) => {
     const stats = levelStats(level);
     required += stats.required;
@@ -167,24 +385,14 @@ function projectStats(project) {
     outstanding += stats.outstanding;
     if (stats.outstanding > EPSILON) incompleteLevels.push({ level, stats, index });
   });
-
   incompleteLevels.sort((a, b) => {
     const aDate = a.level.estimatedDeliveryDate || "9999-12-31";
     const bDate = b.level.estimatedDeliveryDate || "9999-12-31";
     return aDate.localeCompare(bDate) || a.index - b.index;
   });
-
   const percent = required > EPSILON ? Math.max(0, Math.min(100, (delivered / required) * 100)) : 0;
   const status = outstanding <= EPSILON ? "delivered" : delivered > EPSILON ? "partial" : "upcoming";
-  return {
-    required,
-    delivered,
-    outstanding,
-    percent,
-    status,
-    packagesRemaining: incompleteLevels.length,
-    nextLevel: incompleteLevels[0]?.level || null
-  };
+  return { required, delivered, outstanding, percent, status, packagesRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
 }
 
 function allLevels() {
@@ -217,10 +425,7 @@ function statusLabel(status) {
   return "UPCOMING";
 }
 
-function projectTitle(project) {
-  return project.address || "Address / Project Name not entered";
-}
-
+function projectTitle(project) { return project.address || "Address / Project Name not entered"; }
 function projectMetaHtml(project) {
   const projectId = [project.projectNumber, project.revision].filter(Boolean).join(" · ") || "No project #";
   const missingTitle = !normalizeSpaces(project.address || "");
@@ -241,7 +446,6 @@ async function handlePdf(file) {
   const status = $("parseStatus");
   status.className = "status muted";
   status.textContent = `Reading ${file.name}…`;
-
   try {
     const lib = await loadPdfJs();
     const lines = await extractPdfLines(file, lib);
@@ -261,7 +465,7 @@ async function handlePdf(file) {
         id: uid(),
         name: level.name,
         estimatedDeliveryDate: useProjectDate ? ($("projectDate").value || "") : "",
-        materials: level.materials.map(item => ({ material: item.material, requiredLf: item.requiredLf })),
+        materials: level.materials.map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
         deliveries: []
       }))
     };
@@ -348,7 +552,102 @@ function resetIntake() {
   $("levelEditor").innerHTML = "";
 }
 
-function saveDraftProject() {
+function projectToCloudRows(project) {
+  const projectId = uid();
+  const projectRow = {
+    id: projectId,
+    project_number: project.projectNumber,
+    revision: project.revision || null,
+    address_project_name: project.address || null,
+    customer: project.customer || null,
+    sales: project.sales || null,
+    default_delivery_date: project.defaultEstimatedDeliveryDate || null,
+    version: 1
+  };
+
+  const levelRows = [];
+  const materialRows = [];
+  const deliveryRows = [];
+  const levelIdMap = new Map();
+  const materialIdMap = new Map();
+
+  (project.levels || []).forEach((level, levelIndex) => {
+    const levelId = uid();
+    levelIdMap.set(level.id || `${levelIndex}`, levelId);
+    levelRows.push({
+      id: levelId,
+      project_id: projectId,
+      level_name: level.name,
+      estimated_delivery_date: level.estimatedDeliveryDate || null,
+      display_order: levelIndex,
+      version: 1
+    });
+
+    (level.materials || []).forEach((material, materialIndex) => {
+      const materialId = uid();
+      materialIdMap.set(`${level.id || levelIndex}|${material.id || materialIndex}|${normalizeMaterialKey(material.material)}`, materialId);
+      materialRows.push({
+        id: materialId,
+        level_id: levelId,
+        material_name: material.material,
+        original_lf: Number(material.requiredLf || 0),
+        version: 1
+      });
+    });
+
+    (level.deliveries || []).forEach((delivery, deliveryIndex) => {
+      const selectedDate = delivery.date || todayIso();
+      const uniqueTime = new Date(Date.now() + deliveryIndex).toISOString().slice(11);
+      const deliveredAt = `${selectedDate}T${uniqueTime}`;
+      for (const item of delivery.items || []) {
+        let materialId = null;
+        const match = (level.materials || []).find((material, materialIndex) => {
+          if (item.materialId && material.id === item.materialId) {
+            materialId = materialIdMap.get(`${level.id || levelIndex}|${material.id || materialIndex}|${normalizeMaterialKey(material.material)}`);
+            return true;
+          }
+          return normalizeMaterialKey(material.material) === normalizeMaterialKey(item.material);
+        });
+        if (!materialId && match) {
+          const materialIndex = level.materials.indexOf(match);
+          materialId = materialIdMap.get(`${level.id || levelIndex}|${match.id || materialIndex}|${normalizeMaterialKey(match.material)}`);
+        }
+        if (!materialId) continue;
+        deliveryRows.push({
+          id: uid(),
+          level_id: levelId,
+          material_id: materialId,
+          delivered_lf: Number(item.lf || 0),
+          delivered_at: deliveredAt,
+          note: delivery.note || null
+        });
+      }
+    });
+  });
+
+  return { projectId, projectRow, levelRows, materialRows, deliveryRows };
+}
+
+async function createProjectGraph(project) {
+  const rows = projectToCloudRows(project);
+  let insertedProject = false;
+  try {
+    await insertRows("projects", rows.projectRow);
+    insertedProject = true;
+    if (rows.levelRows.length) await insertRows("levels", rows.levelRows);
+    if (rows.materialRows.length) await insertRows("materials", rows.materialRows);
+    if (rows.deliveryRows.length) await insertRows("deliveries", rows.deliveryRows);
+    return rows.projectId;
+  } catch (error) {
+    if (insertedProject) {
+      try { await deleteRows("projects", { id: `eq.${rows.projectId}` }); }
+      catch (cleanupError) { console.warn("Could not clean up failed project insert", cleanupError); }
+    }
+    throw error;
+  }
+}
+
+async function saveDraftProject() {
   if (!draft) return;
   syncDraftFromInputs();
   const projectDate = $("projectDate").value;
@@ -365,34 +664,40 @@ function saveDraftProject() {
     if (!level.materials.length) return alert(`${level.name} needs at least one material.`);
   }
 
-  const existingIndex = state.projects.findIndex(project => project.projectNumber.toLowerCase() === draft.projectNumber.toLowerCase());
-  const existing = existingIndex >= 0 ? state.projects[existingIndex] : null;
-  const projectRecord = {
-    id: existing?.id || uid(),
-    projectNumber: draft.projectNumber,
-    revision: draft.revision,
-    customer: draft.customer,
-    sales: draft.sales,
-    address: draft.address,
-    defaultEstimatedDeliveryDate: draft.defaultEstimatedDeliveryDate,
-    collapsed: existing ? Boolean(existing.collapsed) : draft.levels.length > 1,
-    sourceFileName: draft.sourceFileName,
-    createdAt: existing?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    levels: draft.levels.map(level => ({ ...level, id: level.id || uid(), deliveries: level.deliveries || [] }))
-  };
+  const saveButton = $("saveProject");
+  saveButton.disabled = true;
+  saveButton.textContent = "Saving…";
+  try {
+    await syncFromCloud({ silent: true });
+    const existing = state.projects.find(project => project.projectNumber.toLowerCase() === draft.projectNumber.toLowerCase());
+    if (existing) {
+      const message = `Project ${draft.projectNumber} already exists${existing.revision ? ` (${existing.revision})` : ""}.\n\nReplace it with ${draft.revision || "this upload"}?\n\nExisting delivery history will be removed because the project quantities may have changed.`;
+      if (!confirm(message)) return;
+    }
 
-  if (existingIndex >= 0) {
-    const message = `Project ${draft.projectNumber} already exists${existing.revision ? ` (${existing.revision})` : ""}.\n\nReplace it with ${draft.revision || "this upload"}?\n\nExisting delivery history will be removed because the project quantities may have changed.`;
-    if (!confirm(message)) return;
-    state.projects.splice(existingIndex, 1, projectRecord);
-  } else {
-    state.projects.push(projectRecord);
+    const projectRecord = {
+      projectNumber: draft.projectNumber,
+      revision: draft.revision,
+      customer: draft.customer,
+      sales: draft.sales,
+      address: draft.address,
+      defaultEstimatedDeliveryDate: draft.defaultEstimatedDeliveryDate,
+      levels: draft.levels
+    };
+    const newProjectId = await createProjectGraph(projectRecord);
+    if (existing) await deleteRows("projects", { id: `eq.${existing.id}` });
+    await recordActivity("project", newProjectId, existing ? "replace_project" : "create_project", { project_number: draft.projectNumber, revision: draft.revision });
+    setProjectCollapsed(newProjectId, draft.levels.length > 1);
+    resetIntake();
+    await syncFromCloud({ silent: true });
+    setTab("matrix");
+  } catch (error) {
+    console.error(error);
+    alert(`Could not save the project to shared data.\n\n${error.message}`);
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = "Add Project to Shared Forecast";
   }
-
-  persist();
-  resetIntake();
-  setTab("matrix");
 }
 
 function visibleProjects(showDelivered) {
@@ -408,11 +713,8 @@ function buildMatrixColumns(showDelivered) {
   const columns = [];
   for (const { project, visibleLevels } of visibleProjects(showDelivered)) {
     const canCollapse = (project.levels || []).length > 1;
-    if (canCollapse && project.collapsed) {
-      columns.push({ type: "project", project, levels: visibleLevels });
-    } else {
-      for (const level of visibleLevels) columns.push({ type: "level", project, level, levels: [level] });
-    }
+    if (canCollapse && isProjectCollapsed(project)) columns.push({ type: "project", project, levels: visibleLevels });
+    else for (const level of visibleLevels) columns.push({ type: "level", project, level, levels: [level] });
   }
   return columns;
 }
@@ -421,7 +723,6 @@ function columnMaterialStats(column, materialKey) {
   let required = 0;
   let outstanding = 0;
   let found = false;
-
   for (const level of column.levels) {
     for (const material of level.materials || []) {
       if (normalizeMaterialKey(material.material) !== materialKey) continue;
@@ -430,7 +731,6 @@ function columnMaterialStats(column, materialKey) {
       outstanding += outstandingFor(level, material);
     }
   }
-
   return { found, required, outstanding, delivered: Math.max(0, required - outstanding) };
 }
 
@@ -459,9 +759,7 @@ function collapsedProjectHeaderHtml(project) {
   return `<th class="project-col collapsed-project-col">
     <div class="project-header-card collapsed-summary-card">
       ${projectMetaHtml(project)}
-      ${next ? `
-        <div class="operational-line"><strong>Next:</strong> ${escapeHtml(next.name)} · ${escapeHtml(formatDate(next.estimatedDeliveryDate))}</div>
-      ` : `<div class="operational-line"><strong>Project complete</strong></div>`}
+      ${next ? `<div class="operational-line"><strong>Next:</strong> ${escapeHtml(next.name)} · ${escapeHtml(formatDate(next.estimatedDeliveryDate))}</div>` : `<div class="operational-line"><strong>Project complete</strong></div>`}
       <div class="package-line">${stats.packagesRemaining} ${packageWord} remaining</div>
       ${progressHtml(stats.percent, "overall complete")}
       <div class="project-card-actions">
@@ -487,38 +785,65 @@ function openProjectEdit(projectId) {
   $("projectEditDialog").showModal();
 }
 
-function saveProjectEdit() {
+async function saveProjectEdit() {
   if (!activeEditProject) return;
+  const projectId = activeEditProject.id;
+  const projectVersion = activeEditProject.version;
   const projectNumber = normalizeSpaces($("editProjectNumber").value).toUpperCase();
   const revision = normalizeSpaces($("editRevision").value).toUpperCase();
   const customer = normalizeSpaces($("editCustomer").value);
   const sales = normalizeSpaces($("editSales").value);
   const address = normalizeSpaces($("editAddress").value);
   const defaultDate = $("editProjectDate").value;
+  const applyAll = $("editApplyDateAll").checked;
 
   if (!projectNumber) return alert("Project # is required.");
   if (!address) return alert("Address (Project Name) is required.");
+  if (applyAll && !defaultDate) return alert("Choose a project default delivery date before applying it to all levels.");
 
-  const duplicate = state.projects.find(item => item.id !== activeEditProject.id && item.projectNumber.toLowerCase() === projectNumber.toLowerCase());
+  const duplicate = state.projects.find(item => item.id !== projectId && item.projectNumber.toLowerCase() === projectNumber.toLowerCase());
   if (duplicate) return alert(`Project # ${projectNumber} already exists.`);
-  if ($("editApplyDateAll").checked && !defaultDate) return alert("Choose a project default delivery date before applying it to all levels.");
 
-  activeEditProject.projectNumber = projectNumber;
-  activeEditProject.revision = revision;
-  activeEditProject.customer = customer;
-  activeEditProject.sales = sales;
-  activeEditProject.address = address;
-  activeEditProject.defaultEstimatedDeliveryDate = defaultDate;
-  activeEditProject.updatedAt = new Date().toISOString();
+  const button = $("saveProjectEdit");
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    const updated = await updateRows("projects", { id: `eq.${projectId}`, version: `eq.${projectVersion}` }, {
+      project_number: projectNumber,
+      revision: revision || null,
+      customer: customer || null,
+      sales: sales || null,
+      address_project_name: address,
+      default_delivery_date: defaultDate || null,
+      updated_at: new Date().toISOString(),
+      version: projectVersion + 1
+    });
+    if (!updated?.length) throw new Error("This project was changed by another user while you were editing it. The shared data will be reloaded so you can review the latest version.");
 
-  if ($("editApplyDateAll").checked) {
-    (activeEditProject.levels || []).forEach(level => { level.estimatedDeliveryDate = defaultDate; });
+    if (applyAll) {
+      for (const level of activeEditProject.levels || []) {
+        const changed = await updateRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` }, {
+          estimated_delivery_date: defaultDate,
+          updated_at: new Date().toISOString(),
+          version: level.version + 1
+        });
+        if (!changed?.length) throw new Error(`${level.name} was changed by another user while you were editing the project.`);
+      }
+    }
+
+    await recordActivity("project", projectId, "update_project", { project_number: projectNumber, apply_date_to_all_levels: applyAll });
+    $("projectEditDialog").close("saved");
+    activeEditProject = null;
+    await syncFromCloud({ silent: true });
+    setTab("matrix");
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+    await syncFromCloud({ silent: true });
+  } finally {
+    button.disabled = false;
+    button.textContent = "Save Project";
   }
-
-  $("projectEditDialog").close("saved");
-  activeEditProject = null;
-  persist();
-  setTab("matrix");
 }
 
 function closeDialogToMatrix(dialog) {
@@ -544,12 +869,10 @@ function updateMatrixTopScrollbar() {
   const topScroll = $("matrixTopScroll");
   const spacer = $("matrixTopScrollInner");
   if (!wrap || !topScroll || !spacer || wrap.classList.contains("hidden")) return;
-
   const contentWidth = Math.max(wrap.scrollWidth, wrap.clientWidth);
   spacer.style.width = `${contentWidth}px`;
   const hasHorizontalOverflow = wrap.scrollWidth > wrap.clientWidth + 1;
   topScroll.classList.toggle("no-overflow", !hasHorizontalOverflow);
-
   const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
   matrixScrollLeft = Math.min(matrixScrollLeft, maxLeft);
   wrap.scrollLeft = matrixScrollLeft;
@@ -573,11 +896,7 @@ function renderMatrix() {
     return;
   }
 
-  const head = columns.map(column => column.type === "project"
-    ? collapsedProjectHeaderHtml(column.project)
-    : levelHeaderHtml(column.project, column.level)
-  ).join("");
-
+  const head = columns.map(column => column.type === "project" ? collapsedProjectHeaderHtml(column.project) : levelHeaderHtml(column.project, column.level)).join("");
   const rows = materials.map(materialName => {
     const key = normalizeMaterialKey(materialName);
     const cells = columns.map(column => {
@@ -631,7 +950,9 @@ function renderForecast() {
 
 function renderStorageSummary() {
   const levels = allLevels().length;
-  $("storageSummary").textContent = `${state.projects.length} project${state.projects.length === 1 ? "" : "s"}, ${levels} level${levels === 1 ? "" : "s"} saved in this browser.`;
+  $("storageSummary").textContent = `${state.projects.length} project${state.projects.length === 1 ? "" : "s"}, ${levels} level${levels === 1 ? "" : "s"} in shared cloud data · synced ${formatSyncTime(lastSyncAt)}.`;
+  const legacy = readLegacyBrowserData();
+  $("importLocalData").classList.toggle("hidden", !(legacy?.projects?.length));
 }
 
 function renderAll() {
@@ -644,7 +965,6 @@ function openDelivery(projectId, levelId) {
   const project = state.projects.find(item => item.id === projectId);
   const level = project?.levels.find(item => item.id === levelId);
   if (!project || !level) return;
-
   activeDelivery = { project, level };
   $("deliveryTitle").textContent = `${projectTitle(project)} — ${level.name}`;
   $("deliverySubtitle").textContent = `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Forecast date ${formatDate(level.estimatedDeliveryDate)}`;
@@ -676,12 +996,11 @@ function renderDeliveryItems() {
 function renderDeliveryHistory() {
   if (!activeDelivery) return;
   const { level } = activeDelivery;
-  const history = [...(level.deliveries || [])].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const history = [...(level.deliveries || [])].sort((a, b) => (b.deliveredAt || b.date || "").localeCompare(a.deliveredAt || a.date || ""));
   if (!history.length) {
     $("deliveryHistory").innerHTML = `<h3>Delivery history</h3><p class="small-note">No deliveries recorded for this level.</p>`;
     return;
   }
-
   $("deliveryHistory").innerHTML = `<h3>Delivery history</h3>${history.map(delivery => `
     <div class="history-item">
       <div>
@@ -692,10 +1011,28 @@ function renderDeliveryHistory() {
     </div>`).join("")}`;
 }
 
-function saveDelivery() {
+function makeDeliveredAt(selectedDate) {
+  return `${selectedDate}T${new Date().toISOString().slice(11)}`;
+}
+
+async function refreshActiveDelivery() {
+  if (!activeDelivery) return;
+  const projectId = activeDelivery.project.id;
+  const levelId = activeDelivery.level.id;
+  await syncFromCloud({ silent: true });
+  const project = state.projects.find(item => item.id === projectId);
+  const level = project?.levels.find(item => item.id === levelId);
+  activeDelivery = project && level ? { project, level } : null;
+}
+
+async function saveDelivery() {
   if (!activeDelivery) return;
   const date = $("deliveryDate").value;
   if (!date) return alert("Choose a delivery date.");
+
+  // Re-read shared data immediately before validating the quantities. This reduces stale-entry conflicts.
+  await refreshActiveDelivery();
+  if (!activeDelivery) return alert("This level no longer exists in the shared data.");
 
   const items = [];
   document.querySelectorAll(".delivery-input").forEach(input => {
@@ -703,33 +1040,54 @@ function saveDelivery() {
     const material = activeDelivery.level.materials[index];
     const max = outstandingFor(activeDelivery.level, material);
     const requested = Number(input.value || 0);
-    if (requested < -EPSILON || requested > max + EPSILON) throw new Error(`Delivery for ${material.material} must be between 0 and ${formatNumber(max)} LF.`);
-    if (requested > EPSILON) items.push({ material: material.material, lf: requested });
+    if (requested < -EPSILON || requested > max + EPSILON) throw new Error(`Delivery for ${material.material} must be between 0 and ${formatNumber(max)} LF. Another user may have recorded a delivery; review the refreshed remaining quantity.`);
+    if (requested > EPSILON) items.push({ material, lf: requested });
   });
-
   if (!items.length) return alert("Enter at least one delivery quantity.");
-  activeDelivery.level.deliveries ||= [];
-  activeDelivery.level.deliveries.push({
+
+  const deliveredAt = makeDeliveredAt(date);
+  const note = normalizeSpaces($("deliveryNote").value);
+  const rows = items.map(item => ({
     id: uid(),
-    date,
-    note: normalizeSpaces($("deliveryNote").value),
-    items,
-    createdAt: new Date().toISOString()
-  });
-  persist();
-  renderDeliveryItems();
-  renderDeliveryHistory();
+    level_id: activeDelivery.level.id,
+    material_id: item.material.id,
+    delivered_lf: item.lf,
+    delivered_at: deliveredAt,
+    note: note || null
+  }));
+  await insertRows("deliveries", rows);
+  await recordActivity("level", activeDelivery.level.id, "record_delivery", { delivery_date: date, note, items: items.map(item => ({ material: item.material.material, lf: item.lf })) });
+  const projectId = activeDelivery.project.id;
+  const levelId = activeDelivery.level.id;
+  await syncFromCloud({ silent: true });
+  const project = state.projects.find(item => item.id === projectId);
+  const level = project?.levels.find(item => item.id === levelId);
+  activeDelivery = project && level ? { project, level } : null;
+  if (activeDelivery) {
+    renderDeliveryItems();
+    renderDeliveryHistory();
+    $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Forecast date ${formatDate(activeDelivery.level.estimatedDeliveryDate)}`;
+  }
 }
 
-function deleteDelivery(deliveryId) {
+async function deleteDelivery(deliveryId) {
   if (!activeDelivery) return;
-  const index = activeDelivery.level.deliveries.findIndex(item => item.id === deliveryId);
-  if (index < 0) return;
-  if (!confirm("Undo this delivery? The quantities will be added back to the outstanding forecast.")) return;
-  activeDelivery.level.deliveries.splice(index, 1);
-  persist();
-  renderDeliveryItems();
-  renderDeliveryHistory();
+  const delivery = activeDelivery.level.deliveries.find(item => item.id === deliveryId);
+  if (!delivery) return;
+  if (!confirm("Undo this delivery? The quantities will be added back to the shared outstanding forecast for everyone.")) return;
+  const ids = delivery.rowIds?.length ? delivery.rowIds : [delivery.id];
+  await deleteRows("deliveries", { id: `in.(${ids.join(",")})` });
+  await recordActivity("level", activeDelivery.level.id, "undo_delivery", { delivery_date: delivery.date, row_ids: ids });
+  const projectId = activeDelivery.project.id;
+  const levelId = activeDelivery.level.id;
+  await syncFromCloud({ silent: true });
+  const project = state.projects.find(item => item.id === projectId);
+  const level = project?.levels.find(item => item.id === levelId);
+  activeDelivery = project && level ? { project, level } : null;
+  if (activeDelivery) {
+    renderDeliveryItems();
+    renderDeliveryHistory();
+  }
 }
 
 function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
@@ -748,12 +1106,10 @@ function csvEscape(value) {
 }
 
 function exportMatrixCsv() {
-  // CSV remains the full project-level matrix regardless of UI collapse state.
   const levels = allLevels().filter(({ level }) => $("showDelivered").checked || levelStats(level).status !== "delivered");
   const materials = uniqueMaterials(levels);
   const header = ["Material", ...levels.map(({ project, level }) => `${projectTitle(project)} | ${project.projectNumber}${project.revision ? ` ${project.revision}` : ""} | ${level.name}`)];
   const rows = [header];
-
   for (const materialName of materials) {
     const key = normalizeMaterialKey(materialName);
     rows.push([materialName, ...levels.map(({ level }) => {
@@ -761,7 +1117,6 @@ function exportMatrixCsv() {
       return material ? outstandingFor(level, material) : "";
     })]);
   }
-
   downloadText("ewp-project-material-matrix.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
@@ -770,7 +1125,6 @@ function exportForecastCsv() {
   const months = [...new Set(levels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(levels);
   const rows = [["Material", ...months.map(monthLabel)]];
-
   for (const materialName of materials) {
     const key = normalizeMaterialKey(materialName);
     rows.push([materialName, ...months.map(month => {
@@ -783,11 +1137,176 @@ function exportForecastCsv() {
       return total || "";
     })]);
   }
-
   downloadText("ewp-monthly-forecast.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
+function cleanBackupState() {
+  return {
+    version: SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    source: "Supabase shared data",
+    projects: state.projects.map(project => ({
+      projectNumber: project.projectNumber,
+      revision: project.revision,
+      customer: project.customer,
+      sales: project.sales,
+      address: project.address,
+      defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate,
+      levels: (project.levels || []).map(level => ({
+        name: level.name,
+        estimatedDeliveryDate: level.estimatedDeliveryDate,
+        materials: (level.materials || []).map(material => ({ material: material.material, requiredLf: material.requiredLf })),
+        deliveries: (level.deliveries || []).map(delivery => ({
+          date: delivery.date,
+          note: delivery.note,
+          items: (delivery.items || []).map(item => ({ material: item.material, lf: item.lf }))
+        }))
+      }))
+    }))
+  };
+}
+
+function normalizeBackup(parsed) {
+  if (!parsed || !Array.isArray(parsed.projects)) return null;
+  if ([2, 3, 4].includes(Number(parsed.version))) return migrateLegacyState(parsed);
+  return {
+    version: SCHEMA_VERSION,
+    projects: parsed.projects.map(project => ({
+      projectNumber: normalizeSpaces(project.projectNumber || "").toUpperCase(),
+      revision: normalizeSpaces(project.revision || "").toUpperCase(),
+      customer: normalizeSpaces(project.customer || ""),
+      sales: normalizeSpaces(project.sales || ""),
+      address: normalizeSpaces(project.address || ""),
+      defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate || "",
+      levels: (project.levels || []).map((level, index) => ({
+        id: uid(),
+        name: normalizeSpaces(level.name || `Level ${index + 1}`),
+        estimatedDeliveryDate: level.estimatedDeliveryDate || "",
+        materials: (level.materials || []).map(material => ({ id: uid(), material: normalizeSpaces(material.material || ""), requiredLf: Number(material.requiredLf || 0) })),
+        deliveries: (level.deliveries || []).map(delivery => ({
+          id: uid(),
+          date: delivery.date || "",
+          note: normalizeSpaces(delivery.note || ""),
+          items: (delivery.items || []).map(item => ({ material: normalizeSpaces(item.material || ""), lf: Number(item.lf || 0) }))
+        }))
+      }))
+    }))
+  };
+}
+
+async function importProjectsToCloud(importState, label) {
+  const validProjects = (importState.projects || []).filter(project => project.projectNumber && project.address && (project.levels || []).length);
+  if (!validProjects.length) throw new Error("No valid projects were found in this import.");
+  if (!confirm(`${label} contains ${validProjects.length} project${validProjects.length === 1 ? "" : "s"}.\n\nMatching Project # records in shared data will be replaced. Continue?`)) return;
+
+  await syncFromCloud({ silent: true });
+  for (const project of validProjects) {
+    const existing = state.projects.find(item => item.projectNumber.toLowerCase() === project.projectNumber.toLowerCase());
+    const newId = await createProjectGraph(project);
+    if (existing) await deleteRows("projects", { id: `eq.${existing.id}` });
+    setProjectCollapsed(newId, (project.levels || []).length > 1);
+    await recordActivity("project", newId, "import_project", { source: label, project_number: project.projectNumber });
+    await syncFromCloud({ silent: true });
+  }
+  await syncFromCloud({ silent: true });
+  alert(`${validProjects.length} project${validProjects.length === 1 ? "" : "s"} imported into shared data.`);
+  setTab("matrix");
+}
+
+async function importLegacyBrowserData() {
+  const legacy = readLegacyBrowserData();
+  if (!legacy?.projects?.length) return alert("No V0.5 browser data was found on this computer.");
+  try {
+    await importProjectsToCloud(legacy, "V0.5 browser data");
+  } catch (error) {
+    console.error(error);
+    alert(`Could not import the browser data.\n\n${error.message}`);
+  }
+}
+
+async function updateForecastDate() {
+  if (!activeDelivery) return;
+  const nextDate = $("forecastDateEdit").value;
+  if (!nextDate) return alert("Choose a forecast date.");
+  const { project, level } = activeDelivery;
+  try {
+    const result = await updateRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` }, {
+      estimated_delivery_date: nextDate,
+      updated_at: new Date().toISOString(),
+      version: level.version + 1
+    });
+    if (!result?.length) throw new Error("This level was changed by another user. The shared data will be refreshed before you try again.");
+    await recordActivity("level", level.id, "update_forecast_date", { from: level.estimatedDeliveryDate, to: nextDate });
+    const projectId = project.id;
+    const levelId = level.id;
+    await syncFromCloud({ silent: true });
+    const freshProject = state.projects.find(item => item.id === projectId);
+    const freshLevel = freshProject?.levels.find(item => item.id === levelId);
+    activeDelivery = freshProject && freshLevel ? { project: freshProject, level: freshLevel } : null;
+    if (activeDelivery) {
+      $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Forecast date ${formatDate(nextDate)}`;
+      renderDeliveryItems();
+      renderDeliveryHistory();
+    }
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+    await syncFromCloud({ silent: true });
+  }
+}
+
+async function removeActiveLevel() {
+  if (!activeDelivery) return;
+  const { project, level } = activeDelivery;
+  if (!confirm(`Remove ${project.projectNumber} — ${level.name} from the shared project?\n\nUse delivery transactions instead when material has actually shipped. This is intended for a cancelled or wrongly imported level.`)) return;
+  try {
+    const deleted = await deleteRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` });
+    if (!deleted?.length) throw new Error("This level was changed by another user before it could be removed.");
+    await recordActivity("project", project.id, "remove_level", { level_name: level.name });
+    if ((project.levels || []).length === 1) {
+      // No levels remain, so remove the empty project too.
+      await deleteRows("projects", { id: `eq.${project.id}` });
+    }
+    activeDelivery = null;
+    $("deliveryDialog").close();
+    await syncFromCloud({ silent: true });
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+    await syncFromCloud({ silent: true });
+  }
+}
+
 function wireEvents() {
+  $("changeUser").addEventListener("click", () => openIdentityDialog({ required: false }));
+  $("identityForm").addEventListener("submit", event => {
+    event.preventDefault();
+    const name = normalizeSpaces($("identityName").value);
+    if (!name) return alert("Enter your name.");
+    finishIdentityDialog(name);
+  });
+  $("identityCancel").addEventListener("click", () => {
+    if (identityDialogRequired) return;
+    if ($("identityDialog").open) $("identityDialog").close("cancel");
+    const resolve = identityResolve;
+    identityResolve = null;
+    if (resolve) resolve(currentUserName);
+  });
+  $("identityDialog").addEventListener("cancel", event => {
+    if (identityDialogRequired) event.preventDefault();
+  });
+  $("identityDialog").addEventListener("click", event => {
+    if (identityDialogRequired) return;
+    const dialog = $("identityDialog");
+    const rect = dialog.getBoundingClientRect();
+    const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+    if (event.target === dialog || outside) {
+      dialog.close("cancel");
+      const resolve = identityResolve;
+      identityResolve = null;
+      if (resolve) resolve(currentUserName);
+    }
+  });
   document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $("addProjectTop").addEventListener("click", () => setTab("intake"));
 
@@ -821,9 +1340,7 @@ function wireEvents() {
   $("applyDateAll").addEventListener("change", () => {
     if (!draft) return;
     syncDraftFromInputs();
-    if ($("applyDateAll").checked) {
-      draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
-    }
+    if ($("applyDateAll").checked) draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
     renderDraftLevels();
   });
 
@@ -834,7 +1351,7 @@ function wireEvents() {
       id: uid(),
       name: `Level ${draft.levels.length + 1}`,
       estimatedDeliveryDate: $("applyDateAll").checked ? $("projectDate").value : "",
-      materials: [{ material: "", requiredLf: 0 }],
+      materials: [{ id: uid(), material: "", requiredLf: 0 }],
       deliveries: []
     });
     renderDraftLevels();
@@ -845,12 +1362,11 @@ function wireEvents() {
     if (!button || !draft) return;
     syncDraftFromInputs();
     const levelIndex = Number(button.dataset.levelIndex);
-
     if (button.classList.contains("remove-level")) {
       draft.levels.splice(levelIndex, 1);
       renderDraftLevels();
     } else if (button.classList.contains("add-material")) {
-      draft.levels[levelIndex].materials.push({ material: "", requiredLf: 0 });
+      draft.levels[levelIndex].materials.push({ id: uid(), material: "", requiredLf: 0 });
       renderDraftLevels();
     } else if (button.classList.contains("remove-material")) {
       draft.levels[levelIndex].materials.splice(Number(button.dataset.materialIndex), 1);
@@ -860,6 +1376,8 @@ function wireEvents() {
 
   $("saveProject").addEventListener("click", saveDraftProject);
   $("showDelivered").addEventListener("change", renderMatrix);
+  $("refreshCloud").addEventListener("click", () => syncFromCloud());
+  $("refreshCloudForecast").addEventListener("click", () => syncFromCloud());
 
   const matrixWrap = $("matrixWrap");
   const matrixTopScroll = $("matrixTopScroll");
@@ -884,37 +1402,21 @@ function wireEvents() {
   }, { passive: false });
   window.addEventListener("resize", () => requestAnimationFrame(updateMatrixTopScrollbar));
 
-  $("matrixWrap").addEventListener("click", event => {
+  matrixWrap.addEventListener("click", event => {
     const manageButton = event.target.closest(".manage-level");
-    if (manageButton) {
-      openDelivery(manageButton.dataset.projectId, manageButton.dataset.levelId);
-      return;
-    }
-
+    if (manageButton) return openDelivery(manageButton.dataset.projectId, manageButton.dataset.levelId);
     const editButton = event.target.closest(".edit-project");
-    if (editButton) {
-      openProjectEdit(editButton.dataset.projectId);
-      return;
-    }
-
+    if (editButton) return openProjectEdit(editButton.dataset.projectId);
     const toggleButton = event.target.closest(".toggle-project-collapse");
     if (toggleButton) {
       const project = state.projects.find(item => item.id === toggleButton.dataset.projectId);
       if (!project || (project.levels || []).length <= 1) return;
-      project.collapsed = !project.collapsed;
-      persist();
+      setProjectCollapsed(project.id, !isProjectCollapsed(project));
+      renderMatrix();
     }
   });
 
-  $("updateForecastDate").addEventListener("click", () => {
-    if (!activeDelivery) return;
-    const nextDate = $("forecastDateEdit").value;
-    if (!nextDate) return alert("Choose a forecast date.");
-    activeDelivery.level.estimatedDeliveryDate = nextDate;
-    persist();
-    $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Forecast date ${formatDate(nextDate)}`;
-  });
-
+  $("updateForecastDate").addEventListener("click", updateForecastDate);
   $("fillEntireLevel").addEventListener("click", () => {
     if (!activeDelivery) return;
     document.querySelectorAll(".delivery-input").forEach(input => {
@@ -922,39 +1424,22 @@ function wireEvents() {
       input.value = outstandingFor(activeDelivery.level, material);
     });
   });
-
-  $("clearDeliveryInputs").addEventListener("click", () => {
-    document.querySelectorAll(".delivery-input").forEach(input => { input.value = 0; });
+  $("clearDeliveryInputs").addEventListener("click", () => document.querySelectorAll(".delivery-input").forEach(input => { input.value = 0; }));
+  $("saveDelivery").addEventListener("click", async () => {
+    const button = $("saveDelivery");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    try { await saveDelivery(); }
+    catch (error) { console.error(error); alert(error.message); }
+    finally { button.disabled = false; button.textContent = "Record Delivery"; }
   });
-
-  $("saveDelivery").addEventListener("click", () => {
-    try {
-      saveDelivery();
-    } catch (error) {
-      alert(error.message);
-    }
-  });
-
-  $("deliveryHistory").addEventListener("click", event => {
+  $("deliveryHistory").addEventListener("click", async event => {
     const button = event.target.closest(".history-delete");
-    if (button) deleteDelivery(button.dataset.deliveryId);
+    if (!button) return;
+    try { await deleteDelivery(button.dataset.deliveryId); }
+    catch (error) { console.error(error); alert(error.message); }
   });
-
-  $("removeLevel").addEventListener("click", () => {
-    if (!activeDelivery) return;
-    const { project, level } = activeDelivery;
-    if (!confirm(`Remove ${project.projectNumber} — ${level.name} from the project?\n\nUse delivery transactions instead when material has actually shipped. This action is intended for a cancelled/wrongly imported level.`)) return;
-
-    const levelIndex = project.levels.findIndex(item => item.id === level.id);
-    if (levelIndex >= 0) project.levels.splice(levelIndex, 1);
-    if (!project.levels.length) {
-      const projectIndex = state.projects.findIndex(item => item.id === project.id);
-      if (projectIndex >= 0) state.projects.splice(projectIndex, 1);
-    }
-    activeDelivery = null;
-    $("deliveryDialog").close();
-    persist();
-  });
+  $("removeLevel").addEventListener("click", removeActiveLevel);
 
   $("saveProjectEdit").addEventListener("click", saveProjectEdit);
   wireBackdropClose($("deliveryDialog"));
@@ -962,32 +1447,46 @@ function wireEvents() {
 
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);
-  $("exportBackup").addEventListener("click", () => downloadText(`ewp-forecast-backup-${todayIso()}.json`, JSON.stringify(state, null, 2), "application/json"));
+  $("exportBackup").addEventListener("click", () => downloadText(`ewp-forecast-shared-backup-${todayIso()}.json`, JSON.stringify(cleanBackupState(), null, 2), "application/json"));
+  $("importLocalData").addEventListener("click", importLegacyBrowserData);
 
   $("importBackup").addEventListener("change", async event => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text());
-      const migrated = migrateState(parsed);
-      if (!migrated) throw new Error("This is not a compatible EWP Forecast backup.");
-      if (!confirm(`Restore ${migrated.projects.length} projects from this backup? This replaces the current browser data.`)) return;
-      state = migrated;
-      persist();
+      const normalized = normalizeBackup(JSON.parse(await file.text()));
+      if (!normalized) throw new Error("This is not a compatible EWP Forecast backup.");
+      await importProjectsToCloud(normalized, file.name);
     } catch (error) {
-      alert(error.message || "Could not restore backup.");
+      console.error(error);
+      alert(error.message || "Could not import backup.");
     } finally {
       event.target.value = "";
     }
   });
 
-  $("clearData").addEventListener("click", () => {
-    if (!state.projects.length) return;
-    if (!confirm("Clear every project and delivery stored by this app in this browser? Export a JSON backup first if you may need the data later.")) return;
-    state = { version: SCHEMA_VERSION, projects: [] };
-    persist();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !hasOpenDialog()) syncFromCloud({ silent: true });
+  });
+  window.addEventListener("focus", () => {
+    if (!hasOpenDialog()) syncFromCloud({ silent: true });
   });
 }
 
-wireEvents();
-renderAll();
+function startAutoRefresh() {
+  setInterval(() => {
+    if (document.visibilityState !== "visible" || hasOpenDialog() || syncInProgress) return;
+    syncFromCloud({ silent: true });
+  }, AUTO_REFRESH_MS);
+}
+
+async function init() {
+  wireEvents();
+  renderCurrentUser();
+  renderAll();
+  if (!currentUserName) await openIdentityDialog({ required: true });
+  await syncFromCloud();
+  startAutoRefresh();
+}
+
+init();

@@ -12,9 +12,17 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.5 · Developed by Samuel Chung</p>
+      <p class="subtitle">Version 0.7 · Developed by Samuel Chung</p>
     </div>
-    <button id="addProjectTop" class="button primary">+ Add Project</button>
+    <div class="header-actions">
+      <div class="user-chip" title="This locally saved name is attached to shared edit-history entries from this browser.">
+        <span class="user-chip-label">User</span>
+        <strong id="currentUserName">User not set</strong>
+        <button id="changeUser" type="button" class="user-change-button">Change</button>
+      </div>
+      <span id="cloudPill" class="cloud-pill connecting">Connecting to shared data…</span>
+      <button id="addProjectTop" class="button primary">+ Add Project</button>
+    </div>
   </header>
 
   <nav class="tabs" aria-label="Main navigation">
@@ -32,7 +40,7 @@
               <p class="step">STEP 1</p>
               <h2>Upload Material List</h2>
             </div>
-            <span class="privacy-pill">Parsed locally</span>
+            <span class="privacy-pill">PDF parsed locally</span>
           </div>
           <label id="dropZone" class="drop-zone" for="pdfFile">
             <input id="pdfFile" type="file" accept="application/pdf,.pdf" hidden />
@@ -41,7 +49,7 @@
             <span>or click to choose a file</span>
           </label>
           <div id="parseStatus" class="status muted">No PDF selected.</div>
-          <p class="small-note">The app only needs Project #, Address (Project Name), Level and each level's <strong>Total Lengths</strong> section. PDF contents stay in this browser; the app does not upload the file to a server.</p>
+          <p class="small-note">The PDF itself stays on this computer. The browser extracts Project #, Address (Project Name), Level and each level's <strong>Total Lengths</strong>, then only the structured project data is saved to the shared database.</p>
         </article>
 
         <article class="card">
@@ -69,8 +77,8 @@
         </div>
         <div id="levelEditor" class="level-editor"></div>
         <div class="save-row">
-          <p class="small-note">Nothing is added to the forecast until you save. You can correct any parser result first.</p>
-          <button id="saveProject" class="button primary large">Add Project to Forecast</button>
+          <p class="small-note">Nothing is added to the shared forecast until you save. You can correct any parser result first.</p>
+          <button id="saveProject" class="button primary large">Add Project to Shared Forecast</button>
         </div>
       </article>
     </section>
@@ -83,6 +91,7 @@
         </div>
         <div class="toolbar-actions">
           <label class="checkbox-row compact"><input id="showDelivered" type="checkbox" /> Show fully delivered levels</label>
+          <button id="refreshCloud" class="button secondary">Refresh</button>
           <button id="exportMatrixCsv" class="button secondary">Export CSV</button>
         </div>
       </div>
@@ -97,9 +106,10 @@
       <div class="toolbar">
         <div>
           <h2>Monthly Forecast</h2>
-          <p>Only outstanding quantities are included. Recording a delivery reduces the forecast immediately.</p>
+          <p>Only outstanding quantities are included. Shared deliveries and date changes flow into this forecast on refresh.</p>
         </div>
         <div class="toolbar-actions">
+          <button id="refreshCloudForecast" class="button secondary">Refresh</button>
           <button id="exportForecastCsv" class="button secondary">Export CSV</button>
         </div>
       </div>
@@ -110,13 +120,13 @@
 
   <footer class="data-footer">
     <div>
-      <strong>Local data</strong>
-      <span id="storageSummary">0 projects saved in this browser.</span>
+      <strong>Shared team data</strong>
+      <span id="storageSummary">Connecting to Supabase…</span>
     </div>
     <div class="footer-actions">
+      <button id="importLocalData" class="link-button hidden">Import V0.5 browser data</button>
       <button id="exportBackup" class="link-button">Backup JSON</button>
-      <label class="link-button file-label">Restore JSON<input id="importBackup" type="file" accept="application/json,.json" hidden /></label>
-      <button id="clearData" class="link-button danger">Clear local data</button>
+      <label class="link-button file-label">Import JSON to cloud<input id="importBackup" type="file" accept="application/json,.json" hidden /></label>
     </div>
   </footer>
 
@@ -155,7 +165,6 @@
     </form>
   </dialog>
 
-
   <dialog id="projectEditDialog" class="dialog compact-dialog">
     <form method="dialog" id="projectEditForm">
       <div class="dialog-header">
@@ -180,6 +189,26 @@
       <div class="dialog-footer">
         <button value="cancel" class="button ghost">Cancel</button>
         <button id="saveProjectEdit" type="button" class="button primary">Save Project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="identityDialog" class="dialog identity-dialog">
+    <form id="identityForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">EDIT HISTORY</p>
+          <h2>Who are you?</h2>
+          <p id="identityHelp" class="muted">Enter your name once on this browser. It will be attached to shared edit-history entries.</p>
+        </div>
+      </div>
+      <label class="identity-name-label">Your name
+        <input id="identityName" autocomplete="name" maxlength="80" placeholder="e.g. Samuel Chung" />
+      </label>
+      <p class="small-note">This is a lightweight identifier, not a login. The name is stored only in this browser; project changes are still shared through Supabase.</p>
+      <div class="dialog-footer">
+        <button id="identityCancel" type="button" class="button ghost hidden">Cancel</button>
+        <button type="submit" class="button primary">Save Name</button>
       </div>
     </form>
   </dialog>

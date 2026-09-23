@@ -1,44 +1,68 @@
-# EWP Material Forecast — V0.5
+# EWP Material Forecast — V0.6 Shared Team Edition
 
 **Developed by Samuel Chung**
 
-A static, browser-based EWP material forecasting prototype designed for GitHub Pages. No Python, Node, admin rights, or local server is required to use the deployed site.
+V0.6 moves the working project data from one browser's `localStorage` into the shared Supabase database while keeping the app itself as a static GitHub Pages site.
 
-## What V0.5 does
+## V0.7 — lightweight user names for edit history
 
-- Uploads an EWP material-list PDF and parses it locally in the browser.
-- Reads the intended fields from the material list: Project #, revision, Address (Project Name), level(s), and each level's Total Lengths section.
-- Adds manual project-default fields for Customer and Sales.
-- Leaves **Use this date for all levels** unchecked by default, so each detected level can have its own estimated delivery date.
-- Stores one project with multiple level/package records.
-- Projects & Materials uses materials as rows.
-- Expanded multi-level projects show one column per level.
-- Every card shows **Address (Project Name)** as the primary heading, with Project # / revision / Customer / Sales in smaller muted text. The project default delivery date remains available for editing but is intentionally not shown on matrix cards.
-- New multi-level projects are collapsed by default and can be expanded into one column per level.
-- A collapsed project shows the next incomplete delivery level/date, how many packages (incomplete levels) remain, and weighted overall % complete.
-- Project/level cards use a compact layout with smaller type, tighter spacing, thinner progress bars and shorter action buttons.
-- Projects & Materials has a dedicated horizontal scrollbar above the matrix, so you never need to scroll to the bottom of a long material list just to move left/right.
-- The matrix itself uses a bounded vertical viewport with sticky project headers and a sticky Material column, making large row/column sets behave more like a frozen-pane spreadsheet.
-- Shift + mouse wheel over the matrix scrolls projects horizontally.
-- Projects can be edited directly from Projects & Materials, including Project #, revision, Customer, Sales, Address (Project Name), and project default delivery date.
-- The Edit Project dialog can optionally apply its default delivery date to all levels.
-- Clicking the backdrop outside the Edit Project or Manage Delivery dialog closes it and returns to Projects & Materials.
-- Expanded level cards show each level's weighted % complete.
-- Completion is calculated automatically from delivered LF / original required LF.
-- A collapsed project's material cell is the outstanding LF summed across its currently visible levels.
-- Records full or partial deliveries without changing the original imported requirement.
-- Monthly Forecast sums outstanding LF by each level's estimated delivery month.
-- Delivery history can be undone.
-- Matrix and forecast can be exported to CSV.
-- Local data can be backed up/restored as JSON.
+- On the first visit in each browser, the app asks **Who are you?**
+- The entered name is stored locally in that browser under `ewp_forecast_user_name`.
+- The current name is shown in the header and can be changed at any time.
+- Every new `activity_log` entry now includes `actor_name` inside the JSON `details` object, so future edit-history UI can show who made each change.
+- This is **not authentication** and does not provide security or identity verification. It is a lightweight audit label until proper login is added.
+- No Supabase schema change is required for this release because the actor name is stored in the existing `details` JSONB field.
 
-## Existing browser data
 
-V0.5 intentionally keeps the same browser storage key and automatically migrates V0.2/V0.3/V0.4 data. Existing projects, levels, delivery history, and saved collapse state should remain. New multi-level projects start collapsed; an existing project keeps the collapse/expand state you already saved.
+## Architecture
 
-## Package definition in V0.5
+- **GitHub Pages** hosts the web app.
+- **Supabase** stores shared Project / Level / Material / Delivery data.
+- EWP PDFs are still parsed **locally in the user's browser**. The original PDF is not uploaded by this app.
+- Only the structured data extracted/entered by the user is sent to Supabase.
+- Every connected team member sees the same shared data.
 
-For now, one project level = one package. A package remains outstanding until that level reaches 100% delivered. This can be changed later if your operational definition of a package is different.
+## V0.6 features
+
+- Shared projects, levels, materials and delivery history across multiple computers.
+- Automatic cloud refresh every 10 seconds while the page is visible.
+- Refreshes immediately after writes and when the browser regains focus.
+- Manual **Refresh** button on Projects & Materials and Monthly Forecast.
+- Uses optimistic `version` checks for edits to project fields and level forecast dates so stale edits are not silently overwritten.
+- Delivery entries are additive. Before recording a delivery, the app refreshes the level so the latest remaining LF is used for validation.
+- Multi-level projects remain collapsed by default on each browser. Collapse/expand is a local UI preference, not shared operational data.
+- Existing compact matrix cards, frozen material column, sticky project headers and top horizontal scrollbar are preserved.
+- Existing V0.5 browser data can be imported into the shared database with **Import V0.5 browser data**.
+- JSON backups can be exported from shared data and imported back into the cloud.
+
+## Supabase connection
+
+The browser-safe connection settings are in `config.mjs`:
+
+- Supabase Project URL
+- Supabase **publishable** key
+
+A publishable key is intentionally usable in frontend/browser code. **Never** put a Supabase Secret key or `service_role` key into this repository.
+
+## Current security state
+
+This V0.6 prototype assumes the Supabase tables are accessible through the Data API without Row Level Security, matching the current development setup.
+
+That is suitable for internal testing, but it is **not the final production security model**. Before exposing sensitive company data broadly, add authentication and RLS policies.
+
+## Concurrent use
+
+Different users can add different projects at the same time normally.
+
+For project-field edits and level forecast-date edits, V0.6 uses the database `version` value. If another user changes the same record first, the stale update is rejected and the app reloads shared data instead of silently overwriting the newer change.
+
+Delivery records are additive. V0.6 refreshes immediately before validating a delivery, which substantially reduces stale-entry problems. A fully transactional server-side delivery function can be added later if strict prevention of simultaneous over-delivery is required.
+
+## Data imported from V0.5
+
+V0.6 still checks the old `ewp_forecast_v2` browser storage key. If it finds V0.5-era projects, the footer shows **Import V0.5 browser data**.
+
+Importing does not automatically erase the old browser copy. Matching Project # records in Supabase are replaced only after you confirm the import.
 
 ## Deploy with GitHub Pages
 
@@ -48,21 +72,12 @@ Put these files directly in the repository root:
 - `styles.css`
 - `app.mjs`
 - `parser.mjs`
+- `db.mjs`
+- `config.mjs`
 - `.nojekyll`
 - `.gitignore`
 - `README.md`
 
-Then in GitHub:
+Then commit and push through GitHub Desktop. GitHub Pages will redeploy the site from `main` / `/(root)`.
 
-1. Open **Settings → Pages**.
-2. Under **Build and deployment**, choose **Deploy from a branch**.
-3. Select `main` and `/(root)`.
-4. Save.
-
-Do not commit real customer PDFs, exported CSV files, or JSON backups. The included `.gitignore` helps guard against this.
-
-## Privacy / storage
-
-PDF parsing and project data are browser-side. The app does not intentionally upload selected PDFs to a backend. Saved project data is stored in the browser's `localStorage`, so it is specific to that browser/profile unless you use Backup JSON / Restore JSON.
-
-PDF.js is loaded from a CDN at runtime. A corporate network that blocks both configured CDNs can prevent PDF parsing even though the rest of the site loads.
+Do not commit real customer PDFs, exported CSV files or JSON backups.
