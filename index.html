@@ -12,13 +12,13 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.7 · Developed by Samuel Chung</p>
+      <p class="subtitle">Version 0.8 · Developed by Samuel Chung</p>
     </div>
     <div class="header-actions">
-      <div class="user-chip" title="This locally saved name is attached to shared edit-history entries from this browser.">
-        <span class="user-chip-label">User</span>
-        <strong id="currentUserName">User not set</strong>
-        <button id="changeUser" type="button" class="user-change-button">Change</button>
+      <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
+        <span class="user-chip-label">Signed in</span>
+        <strong id="currentUserName">Not signed in</strong>
+        <button id="signOutButton" type="button" class="user-change-button">Sign out</button>
       </div>
       <span id="cloudPill" class="cloud-pill connecting">Connecting to shared data…</span>
       <button id="addProjectTop" class="button primary">+ Add Project</button>
@@ -193,22 +193,27 @@
     </form>
   </dialog>
 
-  <dialog id="identityDialog" class="dialog identity-dialog">
-    <form id="identityForm">
+  <dialog id="loginDialog" class="dialog login-dialog">
+    <form id="loginForm">
       <div class="dialog-header">
         <div>
-          <p class="step">EDIT HISTORY</p>
-          <h2>Who are you?</h2>
-          <p id="identityHelp" class="muted">Enter your name once on this browser. It will be attached to shared edit-history entries.</p>
+          <p class="step">SECURE TEAM ACCESS</p>
+          <h2>Sign in to EWP Material Forecast</h2>
+          <p class="muted">Use the email and password created for you by the database administrator.</p>
         </div>
       </div>
-      <label class="identity-name-label">Your name
-        <input id="identityName" autocomplete="name" maxlength="80" placeholder="e.g. Samuel Chung" />
-      </label>
-      <p class="small-note">This is a lightweight identifier, not a login. The name is stored only in this browser; project changes are still shared through Supabase.</p>
+      <div class="login-fields">
+        <label>Email
+          <input id="loginEmail" type="email" autocomplete="username" placeholder="name@company.com" required />
+        </label>
+        <label>Password
+          <input id="loginPassword" type="password" autocomplete="current-password" required />
+        </label>
+      </div>
+      <p id="loginError" class="login-error hidden" role="alert"></p>
+      <p class="small-note">Public sign-up is disabled. Ask the tool administrator to create an account if you do not have one.</p>
       <div class="dialog-footer">
-        <button id="identityCancel" type="button" class="button ghost hidden">Cancel</button>
-        <button type="submit" class="button primary">Save Name</button>
+        <button id="loginButton" type="submit" class="button primary">Sign in</button>
       </div>
     </form>
   </dialog>

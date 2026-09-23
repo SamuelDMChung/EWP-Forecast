@@ -1,68 +1,62 @@
-# EWP Material Forecast — V0.6 Shared Team Edition
+# EWP Material Forecast — V0.8 Secure Team Login
 
 **Developed by Samuel Chung**
 
-V0.6 moves the working project data from one browser's `localStorage` into the shared Supabase database while keeping the app itself as a static GitHub Pages site.
+V0.8 adds Supabase email/password authentication to the shared-team V0.7 application. The app remains a static GitHub Pages site, while operational project data stays in Supabase.
 
-## V0.7 — lightweight user names for edit history
+## V0.8 authentication
 
-- On the first visit in each browser, the app asks **Who are you?**
-- The entered name is stored locally in that browser under `ewp_forecast_user_name`.
-- The current name is shown in the header and can be changed at any time.
-- Every new `activity_log` entry now includes `actor_name` inside the JSON `details` object, so future edit-history UI can show who made each change.
-- This is **not authentication** and does not provide security or identity verification. It is a lightweight audit label until proper login is added.
-- No Supabase schema change is required for this release because the actor name is stored in the existing `details` JSONB field.
-
+- The app is blocked by a **Sign in** dialog until a valid Supabase user authenticates.
+- Public sign-up is intentionally not offered in the app.
+- Team users are created manually by the Supabase administrator.
+- The signed-in user's email is shown in the header with a **Sign out** button.
+- Supabase access and refresh tokens are stored in this browser so the user normally stays signed in.
+- Access tokens are refreshed automatically when needed.
+- Every database request sends the authenticated user's Bearer token in addition to the browser-safe publishable key.
+- New `activity_log` entries record `actor_name`, `actor_email`, and `actor_user_id` from the authenticated Supabase account.
+- The old V0.7 "Who are you?" browser-only identity prompt has been removed.
 
 ## Architecture
 
 - **GitHub Pages** hosts the web app.
-- **Supabase** stores shared Project / Level / Material / Delivery data.
-- EWP PDFs are still parsed **locally in the user's browser**. The original PDF is not uploaded by this app.
-- Only the structured data extracted/entered by the user is sent to Supabase.
-- Every connected team member sees the same shared data.
+- **Supabase Auth** verifies team users.
+- **Supabase Postgres / Data API** stores shared Project / Level / Material / Delivery data.
+- EWP PDFs are parsed **locally in the user's browser**. The original PDF is not uploaded by this app.
+- Only the structured information extracted/entered by the user is sent to Supabase.
 
-## V0.6 features
+## Important transition state
+
+V0.8 is designed to be deployed and login-tested **before** Row Level Security is switched on.
+
+At this stage:
+
+1. Public Supabase sign-up should already be disabled.
+2. Authorized users should be manually created in Supabase and confirmed.
+3. Deploy V0.8 and confirm email/password login works.
+4. Only after successful login testing should RLS be enabled with authenticated-user policies and anonymous access removed.
+
+Do not enable RLS before the V0.8 login test unless the required policies are created at the same time, or the app will lose database access.
+
+## Existing shared features preserved
 
 - Shared projects, levels, materials and delivery history across multiple computers.
-- Automatic cloud refresh every 10 seconds while the page is visible.
-- Refreshes immediately after writes and when the browser regains focus.
-- Manual **Refresh** button on Projects & Materials and Monthly Forecast.
-- Uses optimistic `version` checks for edits to project fields and level forecast dates so stale edits are not silently overwritten.
-- Delivery entries are additive. Before recording a delivery, the app refreshes the level so the latest remaining LF is used for validation.
-- Multi-level projects remain collapsed by default on each browser. Collapse/expand is a local UI preference, not shared operational data.
-- Existing compact matrix cards, frozen material column, sticky project headers and top horizontal scrollbar are preserved.
-- Existing V0.5 browser data can be imported into the shared database with **Import V0.5 browser data**.
-- JSON backups can be exported from shared data and imported back into the cloud.
+- Automatic cloud refresh while the page is visible.
+- Optimistic version checks for project and level edits.
+- Additive partial/full delivery transactions.
+- Multi-level projects collapsed by default.
+- Compact matrix cards, sticky project headers, frozen material column and top horizontal scrollbar.
+- Monthly outstanding-material forecast.
+- V0.5 local-browser data migration.
+- CSV and JSON export/import tools.
 
 ## Supabase connection
 
-The browser-safe connection settings are in `config.mjs`:
+Browser-safe connection settings are in `config.mjs`:
 
 - Supabase Project URL
 - Supabase **publishable** key
 
-A publishable key is intentionally usable in frontend/browser code. **Never** put a Supabase Secret key or `service_role` key into this repository.
-
-## Current security state
-
-This V0.6 prototype assumes the Supabase tables are accessible through the Data API without Row Level Security, matching the current development setup.
-
-That is suitable for internal testing, but it is **not the final production security model**. Before exposing sensitive company data broadly, add authentication and RLS policies.
-
-## Concurrent use
-
-Different users can add different projects at the same time normally.
-
-For project-field edits and level forecast-date edits, V0.6 uses the database `version` value. If another user changes the same record first, the stale update is rejected and the app reloads shared data instead of silently overwriting the newer change.
-
-Delivery records are additive. V0.6 refreshes immediately before validating a delivery, which substantially reduces stale-entry problems. A fully transactional server-side delivery function can be added later if strict prevention of simultaneous over-delivery is required.
-
-## Data imported from V0.5
-
-V0.6 still checks the old `ewp_forecast_v2` browser storage key. If it finds V0.5-era projects, the footer shows **Import V0.5 browser data**.
-
-Importing does not automatically erase the old browser copy. Matching Project # records in Supabase are replaced only after you confirm the import.
+The publishable key is expected to be present in frontend code. **Never** put a Supabase Secret key, database password, or `service_role` key into this repository.
 
 ## Deploy with GitHub Pages
 
@@ -71,6 +65,7 @@ Put these files directly in the repository root:
 - `index.html`
 - `styles.css`
 - `app.mjs`
+- `auth.mjs`
 - `parser.mjs`
 - `db.mjs`
 - `config.mjs`
@@ -78,6 +73,6 @@ Put these files directly in the repository root:
 - `.gitignore`
 - `README.md`
 
-Then commit and push through GitHub Desktop. GitHub Pages will redeploy the site from `main` / `/(root)`.
+Commit and push through GitHub Desktop. GitHub Pages will redeploy from `main` / `/(root)`.
 
-Do not commit real customer PDFs, exported CSV files or JSON backups.
+Do not commit real customer PDFs, exported CSV files, JSON backups, passwords, or Supabase secret keys.

@@ -1,4 +1,5 @@
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.mjs";
+import { getAccessToken } from "./auth.mjs";
 
 const REST_URL = `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1`;
 
@@ -9,8 +10,12 @@ function queryString(params = {}) {
 }
 
 async function request(table, { method = "GET", params = {}, body, prefer = "", signal } = {}) {
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error("Authentication required. Please sign in again.");
+
   const headers = {
     apikey: SUPABASE_PUBLISHABLE_KEY,
+    Authorization: `Bearer ${accessToken}`,
     Accept: "application/json"
   };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -70,7 +75,7 @@ export async function logActivity(entityType, entityId, action, details = {}) {
       details
     });
   } catch (error) {
-    // Activity logging should never block operational work in V0.6.
+    // Activity logging should never block operational work.
     console.warn("Activity log write failed", error);
   }
 }

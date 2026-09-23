@@ -1,11 +1,11 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
 import { AUTO_REFRESH_MS } from "./config.mjs";
 import { loadCloudRows, insertRows, updateRows, deleteRows, logActivity } from "./db.mjs";
+import { restoreSession, signInWithPassword, signOut, getCurrentUser, getLastEmail } from "./auth.mjs";
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const USER_NAME_KEY = "ewp_forecast_user_name";
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const EPSILON = 0.0001;
 
 let state = { version: SCHEMA_VERSION, projects: [] };
@@ -18,69 +18,73 @@ let matrixScrollTop = 0;
 let syncInProgress = false;
 let lastSyncAt = null;
 let uiPrefs = loadUiPrefs();
-let currentUserName = loadUserName();
-let identityDialogRequired = false;
-let identityResolve = null;
+let currentUserName = "";
+let loginResolve = null;
 
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID();
 
-function loadUserName() {
-  try {
-    return normalizeSpaces(localStorage.getItem(USER_NAME_KEY) || "");
-  } catch (error) {
-    console.warn("Could not load local user name", error);
-    return "";
-  }
-}
-
-function saveUserName(name) {
-  currentUserName = normalizeSpaces(name);
-  try {
-    localStorage.setItem(USER_NAME_KEY, currentUserName);
-  } catch (error) {
-    console.warn("Could not save local user name", error);
-  }
+function applySessionIdentity(session) {
+  const user = session?.user || getCurrentUser();
+  currentUserName = normalizeSpaces(user?.email || "");
   renderCurrentUser();
 }
 
 function renderCurrentUser() {
   const label = $("currentUserName");
-  if (label) label.textContent = currentUserName || "User not set";
+  if (label) label.textContent = currentUserName || "Not signed in";
 }
 
 function activityDetails(details = {}) {
-  return { ...details, actor_name: currentUserName || "Unknown user" };
+  const user = getCurrentUser();
+  return {
+    ...details,
+    actor_name: currentUserName || user?.email || "Unknown user",
+    actor_email: user?.email || currentUserName || "",
+    actor_user_id: user?.id || ""
+  };
 }
 
 async function recordActivity(entityType, entityId, action, details = {}) {
   return logActivity(entityType, entityId, action, activityDetails(details));
 }
 
-function openIdentityDialog({ required = false } = {}) {
-  const dialog = $("identityDialog");
-  identityDialogRequired = required;
-  $("identityCancel").classList.toggle("hidden", required);
-  $("identityName").value = currentUserName || "";
-  $("identityHelp").textContent = required
-    ? "Enter your name once on this browser. It will be attached to shared edit-history entries."
-    : "Future shared edit-history entries from this browser will use this name.";
-  if (!dialog.open) dialog.showModal();
-  requestAnimationFrame(() => {
-    $("identityName").focus();
-    $("identityName").select();
-  });
-  return new Promise(resolve => { identityResolve = resolve; });
+function setLoginError(message = "") {
+  const el = $("loginError");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle("hidden", !message);
 }
 
-function finishIdentityDialog(name) {
-  saveUserName(name);
-  const dialog = $("identityDialog");
-  if (dialog.open) dialog.close("saved");
-  const resolve = identityResolve;
-  identityResolve = null;
-  identityDialogRequired = false;
-  if (resolve) resolve(currentUserName);
+function openLoginDialog() {
+  const dialog = $("loginDialog");
+  $("loginEmail").value = getLastEmail();
+  $("loginPassword").value = "";
+  setLoginError("");
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => {
+    const target = $("loginEmail").value ? $("loginPassword") : $("loginEmail");
+    target.focus();
+  });
+  return new Promise(resolve => { loginResolve = resolve; });
+}
+
+function finishLogin(session) {
+  applySessionIdentity(session);
+  const dialog = $("loginDialog");
+  if (dialog.open) dialog.close("signed-in");
+  const resolve = loginResolve;
+  loginResolve = null;
+  if (resolve) resolve(session);
+}
+
+async function ensureAuthenticated() {
+  const restored = await restoreSession();
+  if (restored?.user) {
+    applySessionIdentity(restored);
+    return restored;
+  }
+  return openLoginDialog();
 }
 
 function loadUiPrefs() {
@@ -258,7 +262,7 @@ function mapCloudRows(rows) {
 }
 
 function hasOpenDialog() {
-  return $("deliveryDialog")?.open || $("projectEditDialog")?.open || $("identityDialog")?.open;
+  return $("deliveryDialog")?.open || $("projectEditDialog")?.open || $("loginDialog")?.open;
 }
 
 async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
@@ -1278,34 +1282,35 @@ async function removeActiveLevel() {
 }
 
 function wireEvents() {
-  $("changeUser").addEventListener("click", () => openIdentityDialog({ required: false }));
-  $("identityForm").addEventListener("submit", event => {
+  $("loginForm").addEventListener("submit", async event => {
     event.preventDefault();
-    const name = normalizeSpaces($("identityName").value);
-    if (!name) return alert("Enter your name.");
-    finishIdentityDialog(name);
-  });
-  $("identityCancel").addEventListener("click", () => {
-    if (identityDialogRequired) return;
-    if ($("identityDialog").open) $("identityDialog").close("cancel");
-    const resolve = identityResolve;
-    identityResolve = null;
-    if (resolve) resolve(currentUserName);
-  });
-  $("identityDialog").addEventListener("cancel", event => {
-    if (identityDialogRequired) event.preventDefault();
-  });
-  $("identityDialog").addEventListener("click", event => {
-    if (identityDialogRequired) return;
-    const dialog = $("identityDialog");
-    const rect = dialog.getBoundingClientRect();
-    const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
-    if (event.target === dialog || outside) {
-      dialog.close("cancel");
-      const resolve = identityResolve;
-      identityResolve = null;
-      if (resolve) resolve(currentUserName);
+    const button = $("loginButton");
+    button.disabled = true;
+    button.textContent = "Signing in…";
+    setLoginError("");
+    try {
+      const session = await signInWithPassword($("loginEmail").value, $("loginPassword").value);
+      finishLogin(session);
+      setCloudStatus("connecting", "Connecting to shared data…");
+    } catch (error) {
+      console.error(error);
+      setLoginError(error.message || "Could not sign in.");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Sign in";
     }
+  });
+  $("loginDialog").addEventListener("cancel", event => event.preventDefault());
+  $("signOutButton").addEventListener("click", async () => {
+    if (!confirm("Sign out of EWP Material Forecast?")) return;
+    await signOut();
+    currentUserName = "";
+    renderCurrentUser();
+    state = { version: SCHEMA_VERSION, projects: [] };
+    renderAll();
+    setCloudStatus("connecting", "Sign in required");
+    await openLoginDialog();
+    await syncFromCloud();
   });
   document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $("addProjectTop").addEventListener("click", () => setTab("intake"));
@@ -1484,7 +1489,7 @@ async function init() {
   wireEvents();
   renderCurrentUser();
   renderAll();
-  if (!currentUserName) await openIdentityDialog({ required: true });
+  await ensureAuthenticated();
   await syncFromCloud();
   startAutoRefresh();
 }
