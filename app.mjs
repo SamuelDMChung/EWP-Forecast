@@ -1,20 +1,21 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
 
 const STORAGE_KEY = "ewp_forecast_v2"; // Keep the old key so existing browser data migrates in place.
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const EPSILON = 0.0001;
 
 let state = loadState();
 let draft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
+let activeEditProject = null;
 
 const $ = id => document.getElementById(id);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 function migrateState(parsed) {
   if (!parsed || !Array.isArray(parsed.projects)) return null;
-  if (![2, 3].includes(Number(parsed.version))) return null;
+  if (![2, 3, 4].includes(Number(parsed.version))) return null;
 
   return {
     version: SCHEMA_VERSION,
@@ -220,18 +221,18 @@ function projectTitle(project) {
 
 function projectMetaHtml(project) {
   const projectId = [project.projectNumber, project.revision].filter(Boolean).join(" · ") || "No project #";
+  const missingTitle = !normalizeSpaces(project.address || "");
   return `
-    <div class="project-title">${escapeHtml(projectTitle(project))}</div>
-    <div class="project-meta">${escapeHtml(projectId)}</div>
-    <div class="project-meta">Customer: ${escapeHtml(project.customer || "—")}</div>
-    <div class="project-meta">Sales: ${escapeHtml(project.sales || "—")}</div>`;
+    <div class="project-title${missingTitle ? " project-title-missing" : ""}">${escapeHtml(projectTitle(project))}</div>
+    <div class="project-meta-line">${escapeHtml(projectId)} · Customer: ${escapeHtml(project.customer || "—")}</div>
+    <div class="project-meta-line">Sales: ${escapeHtml(project.sales || "—")} · Default: ${escapeHtml(formatDate(project.defaultEstimatedDeliveryDate))}</div>`;
 }
 
 function progressHtml(percent, label) {
   const safe = Math.max(0, Math.min(100, Number(percent || 0)));
   return `
-    <div class="progress-row"><span>${escapeHtml(label)}</span><strong>${formatPercent(safe)}</strong></div>
-    <div class="progress-track" aria-label="${escapeHtml(label)} ${formatPercent(safe)}"><span style="width:${safe}%"></span></div>`;
+    <div class="progress-row"><strong>${formatPercent(safe)}</strong><span>${escapeHtml(label)}</span></div>
+    <div class="progress-track" aria-label="${formatPercent(safe)} ${escapeHtml(label)}"><span style="width:${safe}%"></span></div>`;
 }
 
 async function handlePdf(file) {
@@ -372,7 +373,7 @@ function saveDraftProject() {
     sales: draft.sales,
     address: draft.address,
     defaultEstimatedDeliveryDate: draft.defaultEstimatedDeliveryDate,
-    collapsed: existing?.collapsed || false,
+    collapsed: existing ? Boolean(existing.collapsed) : draft.levels.length > 1,
     sourceFileName: draft.sourceFileName,
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -437,13 +438,13 @@ function levelHeaderHtml(project, level) {
   return `<th class="project-col level-project-col">
     <div class="project-header-card">
       ${projectMetaHtml(project)}
-      <div class="project-meta project-level-meta">Level: ${escapeHtml(level.name)}</div>
-      <div class="project-meta">Estimated delivery: ${escapeHtml(formatDate(level.estimatedDeliveryDate))}</div>
-      ${progressHtml(stats.percent, "Level complete")}
+      <div class="operational-line"><strong>${escapeHtml(level.name)}</strong> · ${escapeHtml(formatDate(level.estimatedDeliveryDate))}</div>
+      ${progressHtml(stats.percent, "level complete")}
       <div class="project-card-actions">
         <span class="status-badge ${stats.status}">${statusLabel(stats.status)}</span>
-        <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage level</button>
-        ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse project</button>` : ""}
+        <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage</button>
+        <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
+        ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse</button>` : ""}
       </div>
     </div>
   </th>`;
@@ -456,19 +457,84 @@ function collapsedProjectHeaderHtml(project) {
   return `<th class="project-col collapsed-project-col">
     <div class="project-header-card collapsed-summary-card">
       ${projectMetaHtml(project)}
-      <div class="summary-divider"></div>
       ${next ? `
-        <div class="project-meta summary-label">Next delivery</div>
-        <div class="project-meta">${escapeHtml(next.name)} · ${escapeHtml(formatDate(next.estimatedDeliveryDate))}</div>
-      ` : `<div class="project-meta">Project complete</div>`}
-      <div class="project-meta">${stats.packagesRemaining} ${packageWord} remaining</div>
-      ${progressHtml(stats.percent, "Overall complete")}
+        <div class="operational-line"><strong>Next:</strong> ${escapeHtml(next.name)} · ${escapeHtml(formatDate(next.estimatedDeliveryDate))}</div>
+      ` : `<div class="operational-line"><strong>Project complete</strong></div>`}
+      <div class="package-line">${stats.packagesRemaining} ${packageWord} remaining</div>
+      ${progressHtml(stats.percent, "overall complete")}
       <div class="project-card-actions">
         <span class="status-badge ${stats.status}">${statusLabel(stats.status)}</span>
-        <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand project</button>
+        <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
+        <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand</button>
       </div>
     </div>
   </th>`;
+}
+
+function openProjectEdit(projectId) {
+  const project = state.projects.find(item => item.id === projectId);
+  if (!project) return;
+  activeEditProject = project;
+  $("editProjectNumber").value = project.projectNumber || "";
+  $("editRevision").value = project.revision || "";
+  $("editCustomer").value = project.customer || "";
+  $("editSales").value = project.sales || "";
+  $("editAddress").value = project.address || "";
+  $("editProjectDate").value = project.defaultEstimatedDeliveryDate || "";
+  $("editApplyDateAll").checked = false;
+  $("projectEditDialog").showModal();
+}
+
+function saveProjectEdit() {
+  if (!activeEditProject) return;
+  const projectNumber = normalizeSpaces($("editProjectNumber").value).toUpperCase();
+  const revision = normalizeSpaces($("editRevision").value).toUpperCase();
+  const customer = normalizeSpaces($("editCustomer").value);
+  const sales = normalizeSpaces($("editSales").value);
+  const address = normalizeSpaces($("editAddress").value);
+  const defaultDate = $("editProjectDate").value;
+
+  if (!projectNumber) return alert("Project # is required.");
+  if (!address) return alert("Address (Project Name) is required.");
+
+  const duplicate = state.projects.find(item => item.id !== activeEditProject.id && item.projectNumber.toLowerCase() === projectNumber.toLowerCase());
+  if (duplicate) return alert(`Project # ${projectNumber} already exists.`);
+  if ($("editApplyDateAll").checked && !defaultDate) return alert("Choose a project default delivery date before applying it to all levels.");
+
+  activeEditProject.projectNumber = projectNumber;
+  activeEditProject.revision = revision;
+  activeEditProject.customer = customer;
+  activeEditProject.sales = sales;
+  activeEditProject.address = address;
+  activeEditProject.defaultEstimatedDeliveryDate = defaultDate;
+  activeEditProject.updatedAt = new Date().toISOString();
+
+  if ($("editApplyDateAll").checked) {
+    (activeEditProject.levels || []).forEach(level => { level.estimatedDeliveryDate = defaultDate; });
+  }
+
+  $("projectEditDialog").close("saved");
+  activeEditProject = null;
+  persist();
+  setTab("matrix");
+}
+
+function closeDialogToMatrix(dialog) {
+  if (dialog.open) dialog.close("cancel");
+  setTab("matrix");
+}
+
+function wireBackdropClose(dialog) {
+  dialog.addEventListener("click", event => {
+    const rect = dialog.getBoundingClientRect();
+    const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+    if (event.target === dialog || outside) closeDialogToMatrix(dialog);
+  });
+  dialog.addEventListener("close", () => {
+    setTab("matrix");
+    if (dialog.id === "deliveryDialog") activeDelivery = null;
+    if (dialog.id === "projectEditDialog") activeEditProject = null;
+  });
 }
 
 function renderMatrix() {
@@ -779,6 +845,12 @@ function wireEvents() {
       return;
     }
 
+    const editButton = event.target.closest(".edit-project");
+    if (editButton) {
+      openProjectEdit(editButton.dataset.projectId);
+      return;
+    }
+
     const toggleButton = event.target.closest(".toggle-project-collapse");
     if (toggleButton) {
       const project = state.projects.find(item => item.id === toggleButton.dataset.projectId);
@@ -837,6 +909,10 @@ function wireEvents() {
     $("deliveryDialog").close();
     persist();
   });
+
+  $("saveProjectEdit").addEventListener("click", saveProjectEdit);
+  wireBackdropClose($("deliveryDialog"));
+  wireBackdropClose($("projectEditDialog"));
 
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);

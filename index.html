@@ -152,6 +152,35 @@
     </form>
   </dialog>
 
+
+  <dialog id="projectEditDialog" class="dialog compact-dialog">
+    <form method="dialog" id="projectEditForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">PROJECT</p>
+          <h2>Edit Project</h2>
+          <p class="muted">Update the project-wide fields shown on every level card.</p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid">
+        <label>Project #<input id="editProjectNumber" autocomplete="off" /></label>
+        <label>Revision<input id="editRevision" autocomplete="off" /></label>
+        <label>Customer<input id="editCustomer" autocomplete="off" /></label>
+        <label>Sales<input id="editSales" autocomplete="off" /></label>
+        <label class="full">Address (Project Name)<textarea id="editAddress" rows="2"></textarea></label>
+        <label>Project Default Delivery Date<input id="editProjectDate" type="date" /></label>
+        <label class="checkbox-row"><input id="editApplyDateAll" type="checkbox" /> Apply this date to all levels</label>
+      </div>
+
+      <div class="dialog-footer">
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="saveProjectEdit" type="button" class="button primary">Save Project</button>
+      </div>
+    </form>
+  </dialog>
+
   <script type="module" src="app.mjs"></script>
 </body>
 </html>
