@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.8 · Developed by Samuel Chung</p>
+      <p class="subtitle">Version 0.8.1 · Developed by Samuel Chung</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -193,30 +193,32 @@
     </form>
   </dialog>
 
-  <dialog id="loginDialog" class="dialog login-dialog">
-    <form id="loginForm">
-      <div class="dialog-header">
-        <div>
-          <p class="step">SECURE TEAM ACCESS</p>
-          <h2>Sign in to EWP Material Forecast</h2>
-          <p class="muted">Use the email and password created for you by the database administrator.</p>
+  <div id="loginGate" class="auth-gate" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+    <div class="auth-card">
+      <form id="loginForm">
+        <div class="dialog-header">
+          <div>
+            <p class="step">SECURE TEAM ACCESS</p>
+            <h2 id="loginTitle">Sign in to EWP Material Forecast</h2>
+            <p class="muted">Use the email and password created for you by the database administrator.</p>
+          </div>
         </div>
-      </div>
-      <div class="login-fields">
-        <label>Email
-          <input id="loginEmail" type="email" autocomplete="username" placeholder="name@company.com" required />
-        </label>
-        <label>Password
-          <input id="loginPassword" type="password" autocomplete="current-password" required />
-        </label>
-      </div>
-      <p id="loginError" class="login-error hidden" role="alert"></p>
-      <p class="small-note">Public sign-up is disabled. Ask the tool administrator to create an account if you do not have one.</p>
-      <div class="dialog-footer">
-        <button id="loginButton" type="submit" class="button primary">Sign in</button>
-      </div>
-    </form>
-  </dialog>
+        <div class="login-fields">
+          <label>Email
+            <input id="loginEmail" type="email" autocomplete="username" placeholder="name@company.com" required />
+          </label>
+          <label>Password
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
+          </label>
+        </div>
+        <p id="loginError" class="login-error hidden" role="alert"></p>
+        <p class="small-note">Public sign-up is disabled. Ask the tool administrator to create an account if you do not have one.</p>
+        <div class="dialog-footer">
+          <button id="loginButton" type="submit" class="button primary">Sign in</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <script type="module" src="app.mjs"></script>
 </body>

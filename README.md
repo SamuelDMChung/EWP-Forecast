@@ -1,10 +1,10 @@
-# EWP Material Forecast — V0.8 Secure Team Login
+# EWP Material Forecast — V0.8.1 Secure Team Login
 
 **Developed by Samuel Chung**
 
-V0.8 adds Supabase email/password authentication to the shared-team V0.7 application. The app remains a static GitHub Pages site, while operational project data stays in Supabase.
+V0.8.1 adds Supabase email/password authentication to the shared-team V0.7 application. The app remains a static GitHub Pages site, while operational project data stays in Supabase.
 
-## V0.8 authentication
+## V0.8.1 authentication
 
 - The app is blocked by a **Sign in** dialog until a valid Supabase user authenticates.
 - Public sign-up is intentionally not offered in the app.
@@ -26,16 +26,16 @@ V0.8 adds Supabase email/password authentication to the shared-team V0.7 applica
 
 ## Important transition state
 
-V0.8 is designed to be deployed and login-tested **before** Row Level Security is switched on.
+V0.8.1 is designed to be deployed and login-tested **before** Row Level Security is switched on.
 
 At this stage:
 
 1. Public Supabase sign-up should already be disabled.
 2. Authorized users should be manually created in Supabase and confirmed.
-3. Deploy V0.8 and confirm email/password login works.
+3. Deploy V0.8.1 and confirm email/password login works.
 4. Only after successful login testing should RLS be enabled with authenticated-user policies and anonymous access removed.
 
-Do not enable RLS before the V0.8 login test unless the required policies are created at the same time, or the app will lose database access.
+Do not enable RLS before the V0.8.1 login test unless the required policies are created at the same time, or the app will lose database access.
 
 ## Existing shared features preserved
 
@@ -76,3 +76,7 @@ Put these files directly in the repository root:
 Commit and push through GitHub Desktop. GitHub Pages will redeploy from `main` / `/(root)`.
 
 Do not commit real customer PDFs, exported CSV files, JSON backups, passwords, or Supabase secret keys.
+
+
+## V0.8.1 hotfix
+Replaced the modal-dialog sign-in with a full-screen authentication gate for better compatibility with restricted/corporate browsers. The application remains blocked until Supabase email/password authentication succeeds.

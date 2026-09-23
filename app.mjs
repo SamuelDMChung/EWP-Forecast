@@ -56,23 +56,29 @@ function setLoginError(message = "") {
   el.classList.toggle("hidden", !message);
 }
 
+function setAuthGateVisible(visible) {
+  const gate = $("loginGate");
+  if (!gate) return;
+  gate.classList.toggle("hidden", !visible);
+  document.body.classList.toggle("auth-locked", visible);
+  $("signOutButton")?.classList.toggle("hidden", visible);
+}
+
 function openLoginDialog() {
-  const dialog = $("loginDialog");
   $("loginEmail").value = getLastEmail();
   $("loginPassword").value = "";
   setLoginError("");
-  if (!dialog.open) dialog.showModal();
+  setAuthGateVisible(true);
   requestAnimationFrame(() => {
     const target = $("loginEmail").value ? $("loginPassword") : $("loginEmail");
-    target.focus();
+    target?.focus();
   });
   return new Promise(resolve => { loginResolve = resolve; });
 }
 
 function finishLogin(session) {
   applySessionIdentity(session);
-  const dialog = $("loginDialog");
-  if (dialog.open) dialog.close("signed-in");
+  setAuthGateVisible(false);
   const resolve = loginResolve;
   loginResolve = null;
   if (resolve) resolve(session);
@@ -262,7 +268,7 @@ function mapCloudRows(rows) {
 }
 
 function hasOpenDialog() {
-  return $("deliveryDialog")?.open || $("projectEditDialog")?.open || $("loginDialog")?.open;
+  return $("deliveryDialog")?.open || $("projectEditDialog")?.open;
 }
 
 async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
@@ -1300,7 +1306,6 @@ function wireEvents() {
       button.textContent = "Sign in";
     }
   });
-  $("loginDialog").addEventListener("cancel", event => event.preventDefault());
   $("signOutButton").addEventListener("click", async () => {
     if (!confirm("Sign out of EWP Material Forecast?")) return;
     await signOut();
@@ -1309,8 +1314,11 @@ function wireEvents() {
     state = { version: SCHEMA_VERSION, projects: [] };
     renderAll();
     setCloudStatus("connecting", "Sign in required");
-    await openLoginDialog();
-    await syncFromCloud();
+    const session = await openLoginDialog();
+    if (session?.user) {
+      setCloudStatus("connecting", "Connecting to shared data…");
+      await syncFromCloud();
+    }
   });
   document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $("addProjectTop").addEventListener("click", () => setTab("intake"));
@@ -1488,10 +1496,20 @@ function startAutoRefresh() {
 async function init() {
   wireEvents();
   renderCurrentUser();
+  setAuthGateVisible(true);
   renderAll();
-  await ensureAuthenticated();
-  await syncFromCloud();
-  startAutoRefresh();
+  try {
+    const session = await ensureAuthenticated();
+    if (!session?.user) throw new Error("Authentication did not return a signed-in user.");
+    setCloudStatus("connecting", "Connecting to shared data…");
+    await syncFromCloud();
+    startAutoRefresh();
+  } catch (error) {
+    console.error("EWP Forecast startup failed", error);
+    setCloudStatus("error", "Sign-in required");
+    setLoginError(error?.message || "Could not initialize sign-in.");
+    setAuthGateVisible(true);
+  }
 }
 
 init();
