@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Turn material-list PDFs into a project-level matrix and monthly outstanding-material forecast.</p>
+      <p class="subtitle">Version 0.5 · Developed by Samuel Chung</p>
     </div>
     <button id="addProjectTop" class="button primary">+ Add Project</button>
   </header>
@@ -87,7 +87,10 @@
         </div>
       </div>
       <div id="matrixEmpty" class="empty-state">Add a project to build the material matrix.</div>
-      <div id="matrixWrap" class="table-wrap hidden"></div>
+      <div id="matrixTopScroll" class="matrix-top-scroll hidden" aria-label="Horizontal project scroll">
+        <div id="matrixTopScrollInner" class="matrix-top-scroll-inner"></div>
+      </div>
+      <div id="matrixWrap" class="table-wrap matrix-scroll-viewport hidden"></div>
     </section>
 
     <section id="forecast" class="tab-panel">

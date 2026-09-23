@@ -9,6 +9,8 @@ let draft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
 let activeEditProject = null;
+let matrixScrollLeft = 0;
+let matrixScrollTop = 0;
 
 const $ = id => document.getElementById(id);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -225,7 +227,7 @@ function projectMetaHtml(project) {
   return `
     <div class="project-title${missingTitle ? " project-title-missing" : ""}">${escapeHtml(projectTitle(project))}</div>
     <div class="project-meta-line">${escapeHtml(projectId)} · Customer: ${escapeHtml(project.customer || "—")}</div>
-    <div class="project-meta-line">Sales: ${escapeHtml(project.sales || "—")} · Default: ${escapeHtml(formatDate(project.defaultEstimatedDeliveryDate))}</div>`;
+    <div class="project-meta-line">Sales: ${escapeHtml(project.sales || "—")}</div>`;
 }
 
 function progressHtml(percent, label) {
@@ -537,6 +539,24 @@ function wireBackdropClose(dialog) {
   });
 }
 
+function updateMatrixTopScrollbar() {
+  const wrap = $("matrixWrap");
+  const topScroll = $("matrixTopScroll");
+  const spacer = $("matrixTopScrollInner");
+  if (!wrap || !topScroll || !spacer || wrap.classList.contains("hidden")) return;
+
+  const contentWidth = Math.max(wrap.scrollWidth, wrap.clientWidth);
+  spacer.style.width = `${contentWidth}px`;
+  const hasHorizontalOverflow = wrap.scrollWidth > wrap.clientWidth + 1;
+  topScroll.classList.toggle("no-overflow", !hasHorizontalOverflow);
+
+  const maxLeft = Math.max(0, wrap.scrollWidth - wrap.clientWidth);
+  matrixScrollLeft = Math.min(matrixScrollLeft, maxLeft);
+  wrap.scrollLeft = matrixScrollLeft;
+  wrap.scrollTop = Math.min(matrixScrollTop, Math.max(0, wrap.scrollHeight - wrap.clientHeight));
+  topScroll.scrollLeft = wrap.scrollLeft;
+}
+
 function renderMatrix() {
   const showDelivered = $("showDelivered").checked;
   const columns = buildMatrixColumns(showDelivered);
@@ -548,6 +568,7 @@ function renderMatrix() {
   if (!columns.length || !materials.length) {
     empty.classList.remove("hidden");
     wrap.classList.add("hidden");
+    $("matrixTopScroll").classList.add("hidden");
     wrap.innerHTML = "";
     return;
   }
@@ -570,7 +591,9 @@ function renderMatrix() {
 
   wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Outstanding LF</th>${head}</tr></thead><tbody>${rows}</tbody></table>`;
   wrap.classList.remove("hidden");
+  $("matrixTopScroll").classList.remove("hidden");
   empty.classList.add("hidden");
+  requestAnimationFrame(updateMatrixTopScrollbar);
 }
 
 function renderForecast() {
@@ -837,6 +860,29 @@ function wireEvents() {
 
   $("saveProject").addEventListener("click", saveDraftProject);
   $("showDelivered").addEventListener("change", renderMatrix);
+
+  const matrixWrap = $("matrixWrap");
+  const matrixTopScroll = $("matrixTopScroll");
+  matrixWrap.addEventListener("scroll", () => {
+    matrixScrollLeft = matrixWrap.scrollLeft;
+    matrixScrollTop = matrixWrap.scrollTop;
+    if (Math.abs(matrixTopScroll.scrollLeft - matrixWrap.scrollLeft) > 1) matrixTopScroll.scrollLeft = matrixWrap.scrollLeft;
+  });
+  matrixTopScroll.addEventListener("scroll", () => {
+    if (Math.abs(matrixWrap.scrollLeft - matrixTopScroll.scrollLeft) > 1) matrixWrap.scrollLeft = matrixTopScroll.scrollLeft;
+    matrixScrollLeft = matrixTopScroll.scrollLeft;
+  });
+  matrixTopScroll.addEventListener("wheel", event => {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    event.preventDefault();
+    matrixTopScroll.scrollLeft += event.deltaY;
+  }, { passive: false });
+  matrixWrap.addEventListener("wheel", event => {
+    if (!event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    event.preventDefault();
+    matrixWrap.scrollLeft += event.deltaY;
+  }, { passive: false });
+  window.addEventListener("resize", () => requestAnimationFrame(updateMatrixTopScrollbar));
 
   $("matrixWrap").addEventListener("click", event => {
     const manageButton = event.target.closest(".manage-level");
