@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>EWP Material Forecast</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">EWP PURCHASING</p>
+      <h1>EWP Material Forecast</h1>
+      <p class="subtitle">Turn material-list PDFs into a project-level matrix and monthly outstanding-material forecast.</p>
+    </div>
+    <button id="addProjectTop" class="button primary">+ Add Project</button>
+  </header>
+
+  <nav class="tabs" aria-label="Main navigation">
+    <button class="tab active" data-tab="intake">Add Project</button>
+    <button class="tab" data-tab="matrix">Projects &amp; Materials</button>
+    <button class="tab" data-tab="forecast">Monthly Forecast</button>
+  </nav>
+
+  <main>
+    <section id="intake" class="tab-panel active">
+      <div class="grid two-column">
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="step">STEP 1</p>
+              <h2>Upload Material List</h2>
+            </div>
+            <span class="privacy-pill">Parsed locally</span>
+          </div>
+          <label id="dropZone" class="drop-zone" for="pdfFile">
+            <input id="pdfFile" type="file" accept="application/pdf,.pdf" hidden />
+            <span class="drop-icon">PDF</span>
+            <strong>Drop an EWP material-list PDF here</strong>
+            <span>or click to choose a file</span>
+          </label>
+          <div id="parseStatus" class="status muted">No PDF selected.</div>
+          <p class="small-note">The app only needs Project #, Address, Level and each level's <strong>Total Lengths</strong> section. PDF contents stay in this browser; the app does not upload the file to a server.</p>
+        </article>
+
+        <article class="card">
+          <p class="step">STEP 2</p>
+          <h2>Project Defaults</h2>
+          <div class="form-grid">
+            <label>Project #<input id="projectNumber" autocomplete="off" placeholder="e.g. TC26238" /></label>
+            <label>Revision<input id="revision" autocomplete="off" placeholder="e.g. R1" /></label>
+            <label class="full">Address<textarea id="address" rows="2" placeholder="Project address"></textarea></label>
+            <label>Estimated Delivery Date<input id="projectDate" type="date" /></label>
+            <label class="checkbox-row"><input id="applyDateAll" type="checkbox" checked /> Use this date for all levels</label>
+          </div>
+        </article>
+      </div>
+
+      <article id="reviewCard" class="card hidden">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 3</p>
+            <h2>Review Extracted Levels &amp; Materials</h2>
+          </div>
+          <button id="addLevelBtn" class="button secondary">+ Add Level</button>
+        </div>
+        <div id="levelEditor" class="level-editor"></div>
+        <div class="save-row">
+          <p class="small-note">Nothing is added to the forecast until you save. You can correct any parser result first.</p>
+          <button id="saveProject" class="button primary large">Add Project to Forecast</button>
+        </div>
+      </article>
+    </section>
+
+    <section id="matrix" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Projects &amp; Materials</h2>
+          <p>Rows are materials. Every project level gets its own column. Cells show <strong>outstanding LF</strong>.</p>
+        </div>
+        <div class="toolbar-actions">
+          <label class="checkbox-row compact"><input id="showDelivered" type="checkbox" /> Show fully delivered levels</label>
+          <button id="exportMatrixCsv" class="button secondary">Export CSV</button>
+        </div>
+      </div>
+      <div id="matrixEmpty" class="empty-state">Add a project to build the material matrix.</div>
+      <div id="matrixWrap" class="table-wrap hidden"></div>
+    </section>
+
+    <section id="forecast" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Monthly Forecast</h2>
+          <p>Only outstanding quantities are included. Recording a delivery reduces the forecast immediately.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="exportForecastCsv" class="button secondary">Export CSV</button>
+        </div>
+      </div>
+      <div id="forecastEmpty" class="empty-state">Add projects with delivery dates to see the monthly forecast.</div>
+      <div id="forecastWrap" class="table-wrap hidden"></div>
+    </section>
+  </main>
+
+  <footer class="data-footer">
+    <div>
+      <strong>Local data</strong>
+      <span id="storageSummary">0 projects saved in this browser.</span>
+    </div>
+    <div class="footer-actions">
+      <button id="exportBackup" class="link-button">Backup JSON</button>
+      <label class="link-button file-label">Restore JSON<input id="importBackup" type="file" accept="application/json,.json" hidden /></label>
+      <button id="clearData" class="link-button danger">Clear local data</button>
+    </div>
+  </footer>
+
+  <dialog id="deliveryDialog" class="dialog">
+    <form method="dialog" id="deliveryForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">DELIVERY</p>
+          <h2 id="deliveryTitle">Record Delivery</h2>
+          <p id="deliverySubtitle" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid delivery-meta">
+        <label>Forecast / Estimated Delivery Date<input id="forecastDateEdit" type="date" /></label>
+        <label>Delivery Date<input id="deliveryDate" type="date" required /></label>
+        <label class="full">Delivery Note<input id="deliveryNote" placeholder="Optional — urgent truck, phase 1, etc." /></label>
+      </div>
+
+      <div class="delivery-actions">
+        <button id="updateForecastDate" type="button" class="button secondary">Update Forecast Date</button>
+        <button id="fillEntireLevel" type="button" class="button secondary">Deliver Entire Remaining Level</button>
+        <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Delivery Inputs</button>
+      </div>
+
+      <div id="deliveryItems"></div>
+
+      <div class="dialog-footer">
+        <button id="removeLevel" type="button" class="button ghost danger-action">Remove Level from Project</button>
+        <button value="cancel" class="button ghost">Close</button>
+        <button id="saveDelivery" type="button" class="button primary">Record Delivery</button>
+      </div>
+
+      <div id="deliveryHistory" class="history"></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>
