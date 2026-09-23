@@ -1,6 +1,5 @@
-# Never commit customer PDFs, local backups, or exports
 *.pdf
-*backup*.json
 *.csv
+*.json
 .DS_Store
 Thumbs.db

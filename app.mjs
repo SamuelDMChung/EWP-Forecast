@@ -1,7 +1,9 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
 
-const STORAGE_KEY = "ewp_forecast_v2";
-const SCHEMA_VERSION = 2;
+const STORAGE_KEY = "ewp_forecast_v2"; // Keep the old key so existing browser data migrates in place.
+const SCHEMA_VERSION = 3;
+const EPSILON = 0.0001;
+
 let state = loadState();
 let draft = null;
 let pdfjsLib = null;
@@ -10,10 +12,44 @@ let activeDelivery = null;
 const $ = id => document.getElementById(id);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
+function migrateState(parsed) {
+  if (!parsed || !Array.isArray(parsed.projects)) return null;
+  if (![2, 3].includes(Number(parsed.version))) return null;
+
+  return {
+    version: SCHEMA_VERSION,
+    projects: parsed.projects.map(project => ({
+      ...project,
+      id: project.id || uid(),
+      projectNumber: project.projectNumber || "",
+      revision: project.revision || "",
+      customer: project.customer || "",
+      sales: project.sales || "",
+      address: project.address || "",
+      collapsed: Boolean(project.collapsed),
+      defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate || "",
+      levels: (project.levels || []).map(level => ({
+        ...level,
+        id: level.id || uid(),
+        estimatedDeliveryDate: level.estimatedDeliveryDate || "",
+        materials: (level.materials || []).map(material => ({
+          material: material.material || "",
+          requiredLf: Number(material.requiredLf || 0)
+        })),
+        deliveries: Array.isArray(level.deliveries) ? level.deliveries : []
+      }))
+    }))
+  };
+}
+
 function loadState() {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-    if (parsed?.version === SCHEMA_VERSION && Array.isArray(parsed.projects)) return parsed;
+    const migrated = migrateState(parsed);
+    if (migrated) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      return migrated;
+    }
   } catch (error) {
     console.warn("Could not load saved state", error);
   }
@@ -21,6 +57,7 @@ function loadState() {
 }
 
 function persist() {
+  state.version = SCHEMA_VERSION;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   renderAll();
 }
@@ -35,8 +72,7 @@ async function loadPdfJs() {
   for (const url of candidates) {
     try {
       const lib = await import(url);
-      const workerBase = url.replace(/pdf\.min\.mjs$/, "pdf.worker.min.mjs");
-      lib.GlobalWorkerOptions.workerSrc = workerBase;
+      lib.GlobalWorkerOptions.workerSrc = url.replace(/pdf\.min\.mjs$/, "pdf.worker.min.mjs");
       pdfjsLib = lib;
       return pdfjsLib;
     } catch (error) {
@@ -58,8 +94,12 @@ function todayIso() {
 }
 
 function formatNumber(value) {
-  const n = Number(value || 0);
-  return new Intl.NumberFormat("en-CA", { maximumFractionDigits: 2 }).format(n);
+  return new Intl.NumberFormat("en-CA", { maximumFractionDigits: 2 }).format(Number(value || 0));
+}
+
+function formatPercent(value) {
+  const n = Math.max(0, Math.min(100, Number(value || 0)));
+  return `${Math.round(n)}%`;
 }
 
 function formatDate(date) {
@@ -106,24 +146,54 @@ function levelStats(level) {
     outstanding += outstandingFor(level, material);
   }
   const delivered = Math.max(0, required - outstanding);
-  const status = outstanding <= 0.0001 ? "delivered" : delivered > 0.0001 ? "partial" : "upcoming";
-  return { required, delivered, outstanding, status };
+  const percent = required > EPSILON ? Math.max(0, Math.min(100, (delivered / required) * 100)) : 0;
+  const status = outstanding <= EPSILON ? "delivered" : delivered > EPSILON ? "partial" : "upcoming";
+  return { required, delivered, outstanding, percent, status };
 }
 
-function levelRef(project, level) {
-  return { project, level };
+function projectStats(project) {
+  let required = 0;
+  let delivered = 0;
+  let outstanding = 0;
+  const incompleteLevels = [];
+
+  (project.levels || []).forEach((level, index) => {
+    const stats = levelStats(level);
+    required += stats.required;
+    delivered += stats.delivered;
+    outstanding += stats.outstanding;
+    if (stats.outstanding > EPSILON) incompleteLevels.push({ level, stats, index });
+  });
+
+  incompleteLevels.sort((a, b) => {
+    const aDate = a.level.estimatedDeliveryDate || "9999-12-31";
+    const bDate = b.level.estimatedDeliveryDate || "9999-12-31";
+    return aDate.localeCompare(bDate) || a.index - b.index;
+  });
+
+  const percent = required > EPSILON ? Math.max(0, Math.min(100, (delivered / required) * 100)) : 0;
+  const status = outstanding <= EPSILON ? "delivered" : delivered > EPSILON ? "partial" : "upcoming";
+  return {
+    required,
+    delivered,
+    outstanding,
+    percent,
+    status,
+    packagesRemaining: incompleteLevels.length,
+    nextLevel: incompleteLevels[0]?.level || null
+  };
 }
 
 function allLevels() {
-  return state.projects.flatMap(project => project.levels.map(level => levelRef(project, level)));
+  return state.projects.flatMap(project => (project.levels || []).map(level => ({ project, level })));
 }
 
-function uniqueMaterials(levels = allLevels()) {
+function uniqueMaterials(levelRefs = allLevels()) {
   const materialMap = new Map();
-  for (const { level } of levels) {
+  for (const { level } of levelRefs) {
     for (const material of level.materials || []) {
       const key = normalizeMaterialKey(material.material);
-      if (!materialMap.has(key)) materialMap.set(key, material.material);
+      if (key && !materialMap.has(key)) materialMap.set(key, material.material);
     }
   }
   return [...materialMap.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
@@ -138,25 +208,56 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
+function statusLabel(status) {
+  if (status === "partial") return "PARTIAL";
+  if (status === "delivered") return "DELIVERED";
+  return "UPCOMING";
+}
+
+function projectTitle(project) {
+  return project.address || "Address / Project Name not entered";
+}
+
+function projectMetaHtml(project) {
+  const projectId = [project.projectNumber, project.revision].filter(Boolean).join(" · ") || "No project #";
+  return `
+    <div class="project-title">${escapeHtml(projectTitle(project))}</div>
+    <div class="project-meta">${escapeHtml(projectId)}</div>
+    <div class="project-meta">Customer: ${escapeHtml(project.customer || "—")}</div>
+    <div class="project-meta">Sales: ${escapeHtml(project.sales || "—")}</div>`;
+}
+
+function progressHtml(percent, label) {
+  const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+  return `
+    <div class="progress-row"><span>${escapeHtml(label)}</span><strong>${formatPercent(safe)}</strong></div>
+    <div class="progress-track" aria-label="${escapeHtml(label)} ${formatPercent(safe)}"><span style="width:${safe}%"></span></div>`;
+}
+
 async function handlePdf(file) {
   const status = $("parseStatus");
   status.className = "status muted";
   status.textContent = `Reading ${file.name}…`;
+
   try {
     const lib = await loadPdfJs();
     const lines = await extractPdfLines(file, lib);
     const parsed = parseMaterialReportLines(lines, file.name);
     if (!parsed.levels.length) throw new Error("I found the PDF text, but no Total Lengths section could be confidently read.");
 
+    const useProjectDate = $("applyDateAll").checked;
     draft = {
       sourceFileName: file.name,
       projectNumber: parsed.projectNumber || "",
       revision: parsed.revision || "",
+      customer: "",
+      sales: "",
       address: parsed.address || "",
+      defaultEstimatedDeliveryDate: $("projectDate").value || "",
       levels: parsed.levels.map(level => ({
         id: uid(),
         name: level.name,
-        estimatedDeliveryDate: $("projectDate").value || "",
+        estimatedDeliveryDate: useProjectDate ? ($("projectDate").value || "") : "",
         materials: level.materials.map(item => ({ material: item.material, requiredLf: item.requiredLf })),
         deliveries: []
       }))
@@ -164,10 +265,12 @@ async function handlePdf(file) {
 
     $("projectNumber").value = draft.projectNumber;
     $("revision").value = draft.revision;
+    $("customer").value = draft.customer;
+    $("sales").value = draft.sales;
     $("address").value = draft.address;
     $("reviewCard").classList.remove("hidden");
     status.className = "status success";
-    status.textContent = `Read ${draft.levels.length} level${draft.levels.length === 1 ? "" : "s"} and ${draft.levels.reduce((n, l) => n + l.materials.length, 0)} Total Length material lines.`;
+    status.textContent = `Read ${draft.levels.length} level${draft.levels.length === 1 ? "" : "s"} and ${draft.levels.reduce((n, level) => n + level.materials.length, 0)} Total Length material lines.`;
     renderDraftLevels();
   } catch (error) {
     console.error(error);
@@ -207,9 +310,17 @@ function syncDraftFromInputs() {
   if (!draft) return;
   draft.projectNumber = normalizeSpaces($("projectNumber").value).toUpperCase();
   draft.revision = normalizeSpaces($("revision").value).toUpperCase();
+  draft.customer = normalizeSpaces($("customer").value);
+  draft.sales = normalizeSpaces($("sales").value);
   draft.address = normalizeSpaces($("address").value);
-  document.querySelectorAll(".level-name").forEach(input => { draft.levels[Number(input.dataset.levelIndex)].name = normalizeSpaces(input.value); });
-  document.querySelectorAll(".level-date").forEach(input => { draft.levels[Number(input.dataset.levelIndex)].estimatedDeliveryDate = input.value; });
+  draft.defaultEstimatedDeliveryDate = $("projectDate").value;
+
+  document.querySelectorAll(".level-name").forEach(input => {
+    draft.levels[Number(input.dataset.levelIndex)].name = normalizeSpaces(input.value);
+  });
+  document.querySelectorAll(".level-date").forEach(input => {
+    draft.levels[Number(input.dataset.levelIndex)].estimatedDeliveryDate = input.value;
+  });
   document.querySelectorAll(".material-name").forEach(input => {
     draft.levels[Number(input.dataset.levelIndex)].materials[Number(input.dataset.materialIndex)].material = normalizeSpaces(input.value);
   });
@@ -223,9 +334,11 @@ function resetIntake() {
   $("pdfFile").value = "";
   $("projectNumber").value = "";
   $("revision").value = "";
+  $("customer").value = "";
+  $("sales").value = "";
   $("address").value = "";
   $("projectDate").value = "";
-  $("applyDateAll").checked = true;
+  $("applyDateAll").checked = false;
   $("parseStatus").className = "status muted";
   $("parseStatus").textContent = "No PDF selected.";
   $("reviewCard").classList.add("hidden");
@@ -236,7 +349,9 @@ function saveDraftProject() {
   if (!draft) return;
   syncDraftFromInputs();
   const projectDate = $("projectDate").value;
+
   if (!draft.projectNumber) return alert("Project # is required.");
+  if (!draft.address) return alert("Address (Project Name) is required.");
   if (!draft.levels.length) return alert("At least one level is required.");
 
   for (const level of draft.levels) {
@@ -248,19 +363,23 @@ function saveDraftProject() {
   }
 
   const existingIndex = state.projects.findIndex(project => project.projectNumber.toLowerCase() === draft.projectNumber.toLowerCase());
+  const existing = existingIndex >= 0 ? state.projects[existingIndex] : null;
   const projectRecord = {
-    id: existingIndex >= 0 ? state.projects[existingIndex].id : uid(),
+    id: existing?.id || uid(),
     projectNumber: draft.projectNumber,
     revision: draft.revision,
+    customer: draft.customer,
+    sales: draft.sales,
     address: draft.address,
+    defaultEstimatedDeliveryDate: draft.defaultEstimatedDeliveryDate,
+    collapsed: existing?.collapsed || false,
     sourceFileName: draft.sourceFileName,
-    createdAt: existingIndex >= 0 ? state.projects[existingIndex].createdAt : new Date().toISOString(),
+    createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     levels: draft.levels.map(level => ({ ...level, id: level.id || uid(), deliveries: level.deliveries || [] }))
   };
 
   if (existingIndex >= 0) {
-    const existing = state.projects[existingIndex];
     const message = `Project ${draft.projectNumber} already exists${existing.revision ? ` (${existing.revision})` : ""}.\n\nReplace it with ${draft.revision || "this upload"}?\n\nExisting delivery history will be removed because the project quantities may have changed.`;
     if (!confirm(message)) return;
     state.projects.splice(existingIndex, 1, projectRecord);
@@ -273,40 +392,112 @@ function saveDraftProject() {
   setTab("matrix");
 }
 
+function visibleProjects(showDelivered) {
+  return state.projects
+    .map(project => {
+      const visibleLevels = (project.levels || []).filter(level => showDelivered || levelStats(level).status !== "delivered");
+      return { project, visibleLevels };
+    })
+    .filter(item => item.visibleLevels.length > 0);
+}
+
+function buildMatrixColumns(showDelivered) {
+  const columns = [];
+  for (const { project, visibleLevels } of visibleProjects(showDelivered)) {
+    const canCollapse = (project.levels || []).length > 1;
+    if (canCollapse && project.collapsed) {
+      columns.push({ type: "project", project, levels: visibleLevels });
+    } else {
+      for (const level of visibleLevels) columns.push({ type: "level", project, level, levels: [level] });
+    }
+  }
+  return columns;
+}
+
+function columnMaterialStats(column, materialKey) {
+  let required = 0;
+  let outstanding = 0;
+  let found = false;
+
+  for (const level of column.levels) {
+    for (const material of level.materials || []) {
+      if (normalizeMaterialKey(material.material) !== materialKey) continue;
+      found = true;
+      required += Number(material.requiredLf || 0);
+      outstanding += outstandingFor(level, material);
+    }
+  }
+
+  return { found, required, outstanding, delivered: Math.max(0, required - outstanding) };
+}
+
+function levelHeaderHtml(project, level) {
+  const stats = levelStats(level);
+  const multiLevel = (project.levels || []).length > 1;
+  return `<th class="project-col level-project-col">
+    <div class="project-header-card">
+      ${projectMetaHtml(project)}
+      <div class="project-meta project-level-meta">Level: ${escapeHtml(level.name)}</div>
+      <div class="project-meta">Estimated delivery: ${escapeHtml(formatDate(level.estimatedDeliveryDate))}</div>
+      ${progressHtml(stats.percent, "Level complete")}
+      <div class="project-card-actions">
+        <span class="status-badge ${stats.status}">${statusLabel(stats.status)}</span>
+        <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage level</button>
+        ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse project</button>` : ""}
+      </div>
+    </div>
+  </th>`;
+}
+
+function collapsedProjectHeaderHtml(project) {
+  const stats = projectStats(project);
+  const next = stats.nextLevel;
+  const packageWord = stats.packagesRemaining === 1 ? "package" : "packages";
+  return `<th class="project-col collapsed-project-col">
+    <div class="project-header-card collapsed-summary-card">
+      ${projectMetaHtml(project)}
+      <div class="summary-divider"></div>
+      ${next ? `
+        <div class="project-meta summary-label">Next delivery</div>
+        <div class="project-meta">${escapeHtml(next.name)} · ${escapeHtml(formatDate(next.estimatedDeliveryDate))}</div>
+      ` : `<div class="project-meta">Project complete</div>`}
+      <div class="project-meta">${stats.packagesRemaining} ${packageWord} remaining</div>
+      ${progressHtml(stats.percent, "Overall complete")}
+      <div class="project-card-actions">
+        <span class="status-badge ${stats.status}">${statusLabel(stats.status)}</span>
+        <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand project</button>
+      </div>
+    </div>
+  </th>`;
+}
+
 function renderMatrix() {
   const showDelivered = $("showDelivered").checked;
-  const levels = allLevels().filter(({ level }) => showDelivered || levelStats(level).status !== "delivered");
-  const materials = uniqueMaterials(levels);
+  const columns = buildMatrixColumns(showDelivered);
+  const levelRefs = columns.flatMap(column => column.levels.map(level => ({ project: column.project, level })));
+  const materials = uniqueMaterials(levelRefs);
   const wrap = $("matrixWrap");
   const empty = $("matrixEmpty");
 
-  if (!levels.length || !materials.length) {
+  if (!columns.length || !materials.length) {
     empty.classList.remove("hidden");
     wrap.classList.add("hidden");
     wrap.innerHTML = "";
     return;
   }
 
-  const head = levels.map(({ project, level }) => {
-    const stats = levelStats(level);
-    return `<th class="project-col">
-      <strong>${escapeHtml(project.projectNumber)}${project.revision ? ` · ${escapeHtml(project.revision)}` : ""}</strong>
-      <span>${escapeHtml(level.name)}</span>
-      <span>${escapeHtml(formatDate(level.estimatedDeliveryDate))}</span>
-      <span class="status-badge ${stats.status}">${stats.status === "partial" ? "PARTIAL" : stats.status === "delivered" ? "DELIVERED" : "UPCOMING"}</span>
-      <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage level</button>
-    </th>`;
-  }).join("");
+  const head = columns.map(column => column.type === "project"
+    ? collapsedProjectHeaderHtml(column.project)
+    : levelHeaderHtml(column.project, column.level)
+  ).join("");
 
   const rows = materials.map(materialName => {
     const key = normalizeMaterialKey(materialName);
-    const cells = levels.map(({ level }) => {
-      const material = level.materials.find(item => normalizeMaterialKey(item.material) === key);
-      if (!material) return `<td class="cell-zero">—</td>`;
-      const outstanding = outstandingFor(level, material);
-      const delivered = Number(material.requiredLf) - outstanding;
-      const cls = outstanding <= 0.0001 ? "cell-delivered" : delivered > 0.0001 ? "cell-partial" : "";
-      return `<td class="${cls}">${outstanding <= 0.0001 ? "0" : formatNumber(outstanding)}</td>`;
+    const cells = columns.map(column => {
+      const stats = columnMaterialStats(column, key);
+      if (!stats.found) return `<td class="cell-zero">—</td>`;
+      const cls = stats.outstanding <= EPSILON ? "cell-delivered" : stats.delivered > EPSILON ? "cell-partial" : "";
+      return `<td class="${cls}">${stats.outstanding <= EPSILON ? "0" : formatNumber(stats.outstanding)}</td>`;
     }).join("");
     return `<tr><td class="material-col">${escapeHtml(materialName)}</td>${cells}</tr>`;
   }).join("");
@@ -317,7 +508,7 @@ function renderMatrix() {
 }
 
 function renderForecast() {
-  const datedLevels = allLevels().filter(({ level }) => level.estimatedDeliveryDate && levelStats(level).outstanding > 0.0001);
+  const datedLevels = allLevels().filter(({ level }) => level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
   const months = [...new Set(datedLevels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(datedLevels);
   const wrap = $("forecastWrap");
@@ -364,9 +555,10 @@ function openDelivery(projectId, levelId) {
   const project = state.projects.find(item => item.id === projectId);
   const level = project?.levels.find(item => item.id === levelId);
   if (!project || !level) return;
+
   activeDelivery = { project, level };
-  $("deliveryTitle").textContent = `${project.projectNumber} — ${level.name}`;
-  $("deliverySubtitle").textContent = `${project.address || "No address"} · Forecast date ${formatDate(level.estimatedDeliveryDate)}`;
+  $("deliveryTitle").textContent = `${projectTitle(project)} — ${level.name}`;
+  $("deliverySubtitle").textContent = `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Forecast date ${formatDate(level.estimatedDeliveryDate)}`;
   $("forecastDateEdit").value = level.estimatedDeliveryDate || "";
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
@@ -386,7 +578,7 @@ function renderDeliveryItems() {
       <td>${formatNumber(material.requiredLf)}</td>
       <td>${formatNumber(delivered)}</td>
       <td><strong>${formatNumber(remaining)}</strong></td>
-      <td><input class="delivery-input" data-material-index="${index}" type="number" min="0" max="${remaining}" step="0.01" value="0" ${remaining <= 0 ? "disabled" : ""} /></td>
+      <td><input class="delivery-input" data-material-index="${index}" type="number" min="0" max="${remaining}" step="0.01" value="0" ${remaining <= EPSILON ? "disabled" : ""} /></td>
     </tr>`;
   }).join("");
   $("deliveryItems").innerHTML = `<div class="table-wrap"><table class="delivery-table"><thead><tr><th>Material</th><th>Original</th><th>Delivered</th><th>Remaining</th><th>Deliver now</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -400,6 +592,7 @@ function renderDeliveryHistory() {
     $("deliveryHistory").innerHTML = `<h3>Delivery history</h3><p class="small-note">No deliveries recorded for this level.</p>`;
     return;
   }
+
   $("deliveryHistory").innerHTML = `<h3>Delivery history</h3>${history.map(delivery => `
     <div class="history-item">
       <div>
@@ -414,19 +607,26 @@ function saveDelivery() {
   if (!activeDelivery) return;
   const date = $("deliveryDate").value;
   if (!date) return alert("Choose a delivery date.");
+
   const items = [];
   document.querySelectorAll(".delivery-input").forEach(input => {
     const index = Number(input.dataset.materialIndex);
     const material = activeDelivery.level.materials[index];
     const max = outstandingFor(activeDelivery.level, material);
     const requested = Number(input.value || 0);
-    if (requested < -0.0001 || requested > max + 0.0001) throw new Error(`Delivery for ${material.material} must be between 0 and ${formatNumber(max)} LF.`);
-    if (requested > 0.0001) items.push({ material: material.material, lf: requested });
+    if (requested < -EPSILON || requested > max + EPSILON) throw new Error(`Delivery for ${material.material} must be between 0 and ${formatNumber(max)} LF.`);
+    if (requested > EPSILON) items.push({ material: material.material, lf: requested });
   });
-  if (!items.length) return alert("Enter at least one delivery quantity.");
 
+  if (!items.length) return alert("Enter at least one delivery quantity.");
   activeDelivery.level.deliveries ||= [];
-  activeDelivery.level.deliveries.push({ id: uid(), date, note: normalizeSpaces($("deliveryNote").value), items, createdAt: new Date().toISOString() });
+  activeDelivery.level.deliveries.push({
+    id: uid(),
+    date,
+    note: normalizeSpaces($("deliveryNote").value),
+    items,
+    createdAt: new Date().toISOString()
+  });
   persist();
   renderDeliveryItems();
   renderDeliveryHistory();
@@ -459,10 +659,12 @@ function csvEscape(value) {
 }
 
 function exportMatrixCsv() {
+  // CSV remains the full project-level matrix regardless of UI collapse state.
   const levels = allLevels().filter(({ level }) => $("showDelivered").checked || levelStats(level).status !== "delivered");
   const materials = uniqueMaterials(levels);
-  const header = ["Material", ...levels.map(({ project, level }) => `${project.projectNumber}${project.revision ? ` ${project.revision}` : ""} - ${level.name}`)];
+  const header = ["Material", ...levels.map(({ project, level }) => `${projectTitle(project)} | ${project.projectNumber}${project.revision ? ` ${project.revision}` : ""} | ${level.name}`)];
   const rows = [header];
+
   for (const materialName of materials) {
     const key = normalizeMaterialKey(materialName);
     rows.push([materialName, ...levels.map(({ level }) => {
@@ -470,14 +672,16 @@ function exportMatrixCsv() {
       return material ? outstandingFor(level, material) : "";
     })]);
   }
+
   downloadText("ewp-project-material-matrix.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
 function exportForecastCsv() {
-  const levels = allLevels().filter(({ level }) => level.estimatedDeliveryDate && levelStats(level).outstanding > 0.0001);
+  const levels = allLevels().filter(({ level }) => level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
   const months = [...new Set(levels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(levels);
   const rows = [["Material", ...months.map(monthLabel)]];
+
   for (const materialName of materials) {
     const key = normalizeMaterialKey(materialName);
     rows.push([materialName, ...months.map(month => {
@@ -490,6 +694,7 @@ function exportForecastCsv() {
       return total || "";
     })]);
   }
+
   downloadText("ewp-monthly-forecast.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
@@ -517,7 +722,9 @@ function wireEvents() {
   });
 
   $("projectDate").addEventListener("change", () => {
-    if (!draft || !$("applyDateAll").checked) return;
+    if (!draft) return;
+    draft.defaultEstimatedDeliveryDate = $("projectDate").value;
+    if (!$("applyDateAll").checked) return;
     draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
     renderDraftLevels();
   });
@@ -525,14 +732,22 @@ function wireEvents() {
   $("applyDateAll").addEventListener("change", () => {
     if (!draft) return;
     syncDraftFromInputs();
-    if ($("applyDateAll").checked) draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
+    if ($("applyDateAll").checked) {
+      draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
+    }
     renderDraftLevels();
   });
 
   $("addLevelBtn").addEventListener("click", () => {
     if (!draft) return;
     syncDraftFromInputs();
-    draft.levels.push({ id: uid(), name: `Level ${draft.levels.length + 1}`, estimatedDeliveryDate: $("projectDate").value, materials: [{ material: "", requiredLf: 0 }], deliveries: [] });
+    draft.levels.push({
+      id: uid(),
+      name: `Level ${draft.levels.length + 1}`,
+      estimatedDeliveryDate: $("applyDateAll").checked ? $("projectDate").value : "",
+      materials: [{ material: "", requiredLf: 0 }],
+      deliveries: []
+    });
     renderDraftLevels();
   });
 
@@ -541,6 +756,7 @@ function wireEvents() {
     if (!button || !draft) return;
     syncDraftFromInputs();
     const levelIndex = Number(button.dataset.levelIndex);
+
     if (button.classList.contains("remove-level")) {
       draft.levels.splice(levelIndex, 1);
       renderDraftLevels();
@@ -557,8 +773,19 @@ function wireEvents() {
   $("showDelivered").addEventListener("change", renderMatrix);
 
   $("matrixWrap").addEventListener("click", event => {
-    const button = event.target.closest(".manage-level");
-    if (button) openDelivery(button.dataset.projectId, button.dataset.levelId);
+    const manageButton = event.target.closest(".manage-level");
+    if (manageButton) {
+      openDelivery(manageButton.dataset.projectId, manageButton.dataset.levelId);
+      return;
+    }
+
+    const toggleButton = event.target.closest(".toggle-project-collapse");
+    if (toggleButton) {
+      const project = state.projects.find(item => item.id === toggleButton.dataset.projectId);
+      if (!project || (project.levels || []).length <= 1) return;
+      project.collapsed = !project.collapsed;
+      persist();
+    }
   });
 
   $("updateForecastDate").addEventListener("click", () => {
@@ -567,7 +794,7 @@ function wireEvents() {
     if (!nextDate) return alert("Choose a forecast date.");
     activeDelivery.level.estimatedDeliveryDate = nextDate;
     persist();
-    $("deliverySubtitle").textContent = `${activeDelivery.project.address || "No address"} · Forecast date ${formatDate(nextDate)}`;
+    $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Forecast date ${formatDate(nextDate)}`;
   });
 
   $("fillEntireLevel").addEventListener("click", () => {
@@ -577,10 +804,19 @@ function wireEvents() {
       input.value = outstandingFor(activeDelivery.level, material);
     });
   });
-  $("clearDeliveryInputs").addEventListener("click", () => document.querySelectorAll(".delivery-input").forEach(input => { input.value = 0; }));
-  $("saveDelivery").addEventListener("click", () => {
-    try { saveDelivery(); } catch (error) { alert(error.message); }
+
+  $("clearDeliveryInputs").addEventListener("click", () => {
+    document.querySelectorAll(".delivery-input").forEach(input => { input.value = 0; });
   });
+
+  $("saveDelivery").addEventListener("click", () => {
+    try {
+      saveDelivery();
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
   $("deliveryHistory").addEventListener("click", event => {
     const button = event.target.closest(".history-delete");
     if (button) deleteDelivery(button.dataset.deliveryId);
@@ -590,6 +826,7 @@ function wireEvents() {
     if (!activeDelivery) return;
     const { project, level } = activeDelivery;
     if (!confirm(`Remove ${project.projectNumber} — ${level.name} from the project?\n\nUse delivery transactions instead when material has actually shipped. This action is intended for a cancelled/wrongly imported level.`)) return;
+
     const levelIndex = project.levels.findIndex(item => item.id === level.id);
     if (levelIndex >= 0) project.levels.splice(levelIndex, 1);
     if (!project.levels.length) {
@@ -604,14 +841,16 @@ function wireEvents() {
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);
   $("exportBackup").addEventListener("click", () => downloadText(`ewp-forecast-backup-${todayIso()}.json`, JSON.stringify(state, null, 2), "application/json"));
+
   $("importBackup").addEventListener("change", async event => {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
       const parsed = JSON.parse(await file.text());
-      if (parsed?.version !== SCHEMA_VERSION || !Array.isArray(parsed.projects)) throw new Error("This is not a compatible EWP Forecast backup.");
-      if (!confirm(`Restore ${parsed.projects.length} projects from this backup? This replaces the current browser data.`)) return;
-      state = parsed;
+      const migrated = migrateState(parsed);
+      if (!migrated) throw new Error("This is not a compatible EWP Forecast backup.");
+      if (!confirm(`Restore ${migrated.projects.length} projects from this backup? This replaces the current browser data.`)) return;
+      state = migrated;
       persist();
     } catch (error) {
       alert(error.message || "Could not restore backup.");
@@ -619,6 +858,7 @@ function wireEvents() {
       event.target.value = "";
     }
   });
+
   $("clearData").addEventListener("click", () => {
     if (!state.projects.length) return;
     if (!confirm("Clear every project and delivery stored by this app in this browser? Export a JSON backup first if you may need the data later.")) return;

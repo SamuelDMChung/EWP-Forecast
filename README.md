@@ -1,67 +1,59 @@
-# EWP Material Forecast — GitHub Pages V0.2
+# EWP Material Forecast — V0.3
 
-A browser-only prototype for turning Weyerhaeuser-style EWP material-list PDFs into:
+A static, browser-based EWP material forecasting prototype designed for GitHub Pages. No Python, Node, admin rights, or local server is required to use the deployed site.
 
-1. a **Projects & Materials** matrix where rows are materials and each project level is a separate column; and
-2. a **Monthly Forecast** where rows are materials and columns are delivery months.
+## What V0.3 does
 
-The forecast uses **outstanding material**, not the original PDF total. Partial/urgent deliveries can therefore be recorded against any level and the monthly forecast drops immediately.
+- Uploads an EWP material-list PDF and parses it locally in the browser.
+- Reads the intended fields from the material list: Project #, revision, Address (Project Name), level(s), and each level's Total Lengths section.
+- Adds manual project-default fields for Customer and Sales.
+- Leaves **Use this date for all levels** unchecked by default, so each detected level can have its own estimated delivery date.
+- Stores one project with multiple level/package records.
+- Projects & Materials uses materials as rows.
+- Expanded multi-level projects show one column per level.
+- Every expanded level card repeats the complete project-default identity, with **Address (Project Name)** as the large bold heading and the remaining details smaller and muted.
+- Multi-level projects can be collapsed into one summary column.
+- A collapsed project shows the next incomplete delivery level/date, how many packages (incomplete levels) remain, and weighted overall % complete.
+- Expanded level cards show each level's weighted % complete.
+- Completion is calculated automatically from delivered LF / original required LF.
+- A collapsed project's material cell is the outstanding LF summed across its currently visible levels.
+- Records full or partial deliveries without changing the original imported requirement.
+- Monthly Forecast sums outstanding LF by each level's estimated delivery month.
+- Delivery history can be undone.
+- Matrix and forecast can be exported to CSV.
+- Local data can be backed up/restored as JSON.
 
-## What V0.2 does
+## Existing V0.2 browser data
 
-- Upload a PDF in the browser.
-- Read **Project #, Revision, Address, Level(s), and Total Lengths**.
-- Ignore the individual member list, connectors, blocking detail, accessories and other report content.
-- Enter one estimated delivery date for the project, or override dates level-by-level.
-- Review and edit parsed data before saving.
-- Show materials as rows and project levels as columns.
-- Record a whole-level or partial delivery without changing the original PDF requirement.
-- Change a saved level's forecast date when the schedule moves.
-- Remove a wrongly imported/cancelled level (separate from delivery history).
-- Undo recorded deliveries.
-- Aggregate outstanding LF by month.
-- Export both main views as CSV.
-- Backup/restore the local database as JSON.
-- Store data only in the browser's `localStorage`.
+V0.3 intentionally keeps the same browser storage key and automatically migrates V0.2 data. Existing projects, levels, and delivery history should remain. Older projects simply start with blank Customer and Sales fields and expanded project cards.
 
-## Privacy model
+## Package definition in V0.3
 
-The repository contains only the app code. **Do not commit customer PDFs or exported project data to the repo.**
+For now, one project level = one package. A package remains outstanding until that level reaches 100% delivered. This can be changed later if your operational definition of a package is different.
 
-The selected PDF is parsed locally in the user's browser. The PDF itself is not uploaded to an application server. PDF.js is loaded from a public CDN; only the PDF.js library is downloaded from that CDN, not the user's PDF.
+## Deploy with GitHub Pages
 
-## Deploy on GitHub Pages
+Put these files directly in the repository root:
 
-No Python, Node, npm, administrator rights or local server is required for normal use.
+- `index.html`
+- `styles.css`
+- `app.mjs`
+- `parser.mjs`
+- `.nojekyll`
+- `.gitignore`
+- `README.md`
 
-1. Create a GitHub repository, for example `ewp-forecast`.
-2. Upload/commit all files in this folder to the repository root.
-3. In GitHub, open **Settings → Pages**.
-4. Under **Build and deployment**, choose **Deploy from a branch**.
-5. Select branch **main** and folder **/(root)**, then Save.
-6. Wait for GitHub to publish the site. GitHub will show the Pages URL on the same settings page.
-7. Open that URL in Edge/Chrome and upload a material-list PDF.
+Then in GitHub:
 
-## Important V0.2 limitations
+1. Open **Settings → Pages**.
+2. Under **Build and deployment**, choose **Deploy from a branch**.
+3. Select `main` and `/(root)`.
+4. Save.
 
-- Project data lives only in the browser/device that created it. Use **Backup JSON** if you need to move data to another PC or protect against browser-data cleanup.
-- A new revision of an existing Project # currently replaces that project's stored levels after confirmation. Existing delivery history is intentionally removed because revised quantities may no longer correspond to the previous takeoff.
-- The parser is targeted at the material-list format used for the initial sample. Other report layouts may need additional parser rules.
-- The forecast is in **linear feet**, because it uses the report's Total Lengths section. It does not yet convert demand into stock-length piece quantities or subtract yard inventory/incoming POs.
-- PDF.js is loaded from jsDelivr with a cdnjs fallback. If a corporate network blocks both CDNs, the PDF reader will not load. A later version can vendor PDF.js inside the repo to remove that dependency.
+Do not commit real customer PDFs, exported CSV files, or JSON backups. The included `.gitignore` helps guard against this.
 
-## Files
+## Privacy / storage
 
-- `index.html` — UI structure
-- `styles.css` — UI styling
-- `parser.mjs` — PDF line extraction + Weyerhaeuser material-list parser
-- `app.mjs` — project storage, matrix, forecast, deliveries, CSV and backups
-- `.nojekyll` — tells GitHub Pages to serve the files directly
+PDF parsing and project data are browser-side. The app does not intentionally upload selected PDFs to a backend. Saved project data is stored in the browser's `localStorage`, so it is specific to that browser/profile unless you use Backup JSON / Restore JSON.
 
-## Data model
-
-The app keeps the original requirement and delivery transactions separately:
-
-`PDF Total Lengths → Original Requirement → Delivery Transactions → Outstanding → Monthly Forecast`
-
-This is deliberate. An urgent partial shipment does not destroy or edit the original takeoff.
+PDF.js is loaded from a CDN at runtime. A corporate network that blocks both configured CDNs can prevent PDF parsing even though the rest of the site loads.

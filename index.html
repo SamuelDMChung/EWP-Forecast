@@ -41,7 +41,7 @@
             <span>or click to choose a file</span>
           </label>
           <div id="parseStatus" class="status muted">No PDF selected.</div>
-          <p class="small-note">The app only needs Project #, Address, Level and each level's <strong>Total Lengths</strong> section. PDF contents stay in this browser; the app does not upload the file to a server.</p>
+          <p class="small-note">The app only needs Project #, Address (Project Name), Level and each level's <strong>Total Lengths</strong> section. PDF contents stay in this browser; the app does not upload the file to a server.</p>
         </article>
 
         <article class="card">
@@ -50,9 +50,11 @@
           <div class="form-grid">
             <label>Project #<input id="projectNumber" autocomplete="off" placeholder="e.g. TC26238" /></label>
             <label>Revision<input id="revision" autocomplete="off" placeholder="e.g. R1" /></label>
-            <label class="full">Address<textarea id="address" rows="2" placeholder="Project address"></textarea></label>
+            <label>Customer<input id="customer" autocomplete="off" placeholder="Customer" /></label>
+            <label>Sales<input id="sales" autocomplete="off" placeholder="Salesperson" /></label>
+            <label class="full">Address (Project Name)<textarea id="address" rows="2" placeholder="Address / project name"></textarea></label>
             <label>Estimated Delivery Date<input id="projectDate" type="date" /></label>
-            <label class="checkbox-row"><input id="applyDateAll" type="checkbox" checked /> Use this date for all levels</label>
+            <label class="checkbox-row"><input id="applyDateAll" type="checkbox" /> Use this date for all levels</label>
           </div>
         </article>
       </div>
@@ -77,7 +79,7 @@
       <div class="toolbar">
         <div>
           <h2>Projects &amp; Materials</h2>
-          <p>Rows are materials. Every project level gets its own column. Cells show <strong>outstanding LF</strong>.</p>
+          <p>Rows are materials. Expanded projects show one column per level; multi-level projects can collapse into one summary column. Cells show <strong>outstanding LF</strong>.</p>
         </div>
         <div class="toolbar-actions">
           <label class="checkbox-row compact"><input id="showDelivered" type="checkbox" /> Show fully delivered levels</label>
