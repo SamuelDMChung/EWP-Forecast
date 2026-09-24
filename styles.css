@@ -929,3 +929,66 @@ thead .material-col { z-index: 6; background: #f8fafc; }
   .review-project-meta { grid-template-columns: 1fr; }
   .review-summary-strip { grid-template-columns: 1fr; }
 }
+
+
+/* V0.13 editable delivery preview + delivery material search + forecast exclusions */
+.delivery-preview-row {
+  grid-template-columns: minmax(130px, 1fr) minmax(138px, 170px) auto;
+}
+.delivery-preview-date-input {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+.delivery-material-search {
+  position: relative;
+  width: min(520px, 100%);
+  margin: 12px 0;
+}
+.delivery-material-search input {
+  width: 100%;
+  padding-left: 38px;
+  padding-right: 36px;
+}
+.delivery-material-search .project-search-icon {
+  left: 12px;
+}
+.delivery-material-search .search-clear {
+  right: 8px;
+}
+.delivery-table .material-excluded-cell { color: var(--warning); font-weight: 750; }
+.delivery-table .forecast-action-cell { text-align: center; }
+.delivery-table .forecast-action-cell .mini-button { white-space: nowrap; }
+.cell-subnote {
+  margin-top: 2px;
+  color: var(--warning);
+  font-size: 9.5px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.cell-excluded {
+  background: #fff8eb;
+  color: #7a4500;
+  font-weight: 800;
+}
+.exclusion-form-grid select {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 10px 11px;
+  color: var(--text);
+  background: white;
+  outline: none;
+}
+.exclusion-form-grid select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.exclusion-help { margin-top: 10px; }
+#materialExclusionDialog { width: min(680px, calc(100vw - 28px)); }
+
+@media (max-width: 820px) {
+  .delivery-preview-row { grid-template-columns: minmax(110px, 1fr) minmax(128px, 150px) auto; }
+  .delivery-table { min-width: 760px; }
+}

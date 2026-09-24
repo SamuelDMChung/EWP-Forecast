@@ -5,7 +5,7 @@ import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const EPSILON = 0.0001;
 const HISTORY_PAGE_SIZE = 100;
 
@@ -15,6 +15,7 @@ let pdfjsLib = null;
 let activeDelivery = null;
 let activeEditProject = null;
 let activeDeleteProject = null;
+let activeMaterialExclusion = null;
 let matrixScrollLeft = 0;
 let matrixScrollTop = 0;
 let syncInProgress = false;
@@ -175,6 +176,9 @@ function migrateLegacyState(parsed) {
           id: material.id || uid(),
           material: material.material || "",
           requiredLf: Number(material.requiredLf || 0),
+          excludedLf: Number(material.excludedLf || 0),
+          exclusionReason: material.exclusionReason || "",
+          exclusionNote: material.exclusionNote || "",
           version: Number(material.version || 1)
         })),
         deliveries: Array.isArray(level.deliveries) ? level.deliveries.map(delivery => ({
@@ -259,6 +263,9 @@ function mapCloudRows(rows) {
       levelId: row.level_id,
       material: row.material_name || "",
       requiredLf: Number(row.original_lf || 0),
+      excludedLf: Number(row.excluded_lf || 0),
+      exclusionReason: row.exclusion_reason || "",
+      exclusionNote: row.exclusion_note || "",
       createdAt: row.created_at || "",
       updatedAt: row.updated_at || "",
       version: Number(row.version || 1)
@@ -298,7 +305,7 @@ function mapCloudRows(rows) {
 }
 
 function hasOpenDialog() {
-  return $("deliveryDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
+  return $("deliveryDialog")?.open || $("materialExclusionDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
 }
 
 async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
@@ -451,34 +458,47 @@ function deliveryTotals(level) {
   return totals;
 }
 
-function outstandingFor(level, material) {
+function deliveredFor(level, material) {
   const totals = deliveryTotals(level);
-  const delivered = totals.get(`id:${material.id}`) ?? totals.get(`name:${normalizeMaterialKey(material.material)}`) ?? 0;
-  return Math.max(0, Number(material.requiredLf || 0) - delivered);
+  return Math.max(0, Number(totals.get(`id:${material.id}`) ?? totals.get(`name:${normalizeMaterialKey(material.material)}`) ?? 0));
+}
+
+function excludedFor(material) {
+  return Math.max(0, Math.min(Number(material.requiredLf || 0), Number(material.excludedLf || 0)));
+}
+
+function outstandingFor(level, material) {
+  return Math.max(0, Number(material.requiredLf || 0) - deliveredFor(level, material) - excludedFor(material));
 }
 
 function levelStats(level) {
   let required = 0;
+  let delivered = 0;
+  let excluded = 0;
   let outstanding = 0;
   for (const material of level.materials || []) {
     required += Number(material.requiredLf || 0);
+    delivered += deliveredFor(level, material);
+    excluded += excludedFor(material);
     outstanding += outstandingFor(level, material);
   }
-  const delivered = Math.max(0, required - outstanding);
-  const percent = required > EPSILON ? Math.max(0, Math.min(100, (delivered / required) * 100)) : 0;
-  const status = outstanding <= EPSILON ? "delivered" : delivered > EPSILON ? "partial" : "upcoming";
-  return { required, delivered, outstanding, percent, status };
+  const resolved = Math.min(required, delivered + excluded);
+  const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
+  const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
+  return { required, delivered, excluded, outstanding, percent, status };
 }
 
 function projectStats(project) {
   let required = 0;
   let delivered = 0;
+  let excluded = 0;
   let outstanding = 0;
   const incompleteLevels = [];
   (project.levels || []).forEach((level, index) => {
     const stats = levelStats(level);
     required += stats.required;
     delivered += stats.delivered;
+    excluded += stats.excluded;
     outstanding += stats.outstanding;
     if (stats.outstanding > EPSILON) incompleteLevels.push({ level, stats, index });
   });
@@ -487,9 +507,10 @@ function projectStats(project) {
     const bDate = b.level.estimatedDeliveryDate || "9999-12-31";
     return aDate.localeCompare(bDate) || a.index - b.index;
   });
-  const percent = required > EPSILON ? Math.max(0, Math.min(100, (delivered / required) * 100)) : 0;
-  const status = outstanding <= EPSILON ? "delivered" : delivered > EPSILON ? "partial" : "upcoming";
-  return { required, delivered, outstanding, percent, status, packagesRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
+  const resolved = Math.min(required, delivered + excluded);
+  const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
+  const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
+  return { required, delivered, excluded, outstanding, percent, status, packagesRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
 }
 
 function allLevels() {
@@ -651,12 +672,35 @@ function renderDeliveryPreview() {
       ${draft.levels.map((level, index) => `
         <div class="delivery-preview-row">
           <span class="delivery-preview-level">${escapeHtml(level.name || `Level ${index + 1}`)}</span>
-          <span class="delivery-preview-date">${escapeHtml(formatDate(level.estimatedDeliveryDate))}</span>
-          ${level.estimatedDeliveryDate ? `<span class="date-source-badge ${level.dateSource === "manual" ? "manual" : "auto"}">${level.dateSource === "manual" ? "Manual" : "Auto"}</span>` : ""}
+          <input class="preview-level-date delivery-preview-date-input" data-level-index="${index}" type="date" value="${escapeHtml(level.estimatedDeliveryDate || "")}" aria-label="Estimated delivery date for ${escapeHtml(level.name || `Level ${index + 1}`)}" />
+          ${level.estimatedDeliveryDate ? `<span class="date-source-badge ${level.dateSource === "manual" ? "manual" : "auto"}">${level.dateSource === "manual" ? "Manual" : "Auto"}</span>` : `<span></span>`}
         </div>`).join("")}
     </div>`;
   preview.classList.remove("hidden");
 }
+
+function applyManualDraftLevelDate(levelIndex, nextDate) {
+  if (!draft?.levels?.[levelIndex]) return;
+  draft.levels[levelIndex].estimatedDeliveryDate = nextDate || "";
+  draft.levels[levelIndex].dateSource = nextDate ? "manual" : "";
+
+  if ($("applyDateAll").checked) {
+    // A manual exception breaks the "same date for all" rule, while preserving all current dates.
+    $("applyDateAll").checked = false;
+  } else if ($("staggerWeekly").checked) {
+    // The edited level becomes a new anchor and every later level remains one week apart.
+    if (levelIndex === 0) {
+      $("projectDate").value = draft.levels[0].estimatedDeliveryDate || "";
+      draft.defaultEstimatedDeliveryDate = $("projectDate").value;
+    }
+    continueWeeklyScheduleFrom(levelIndex);
+  } else if (levelIndex === 0) {
+    $("projectDate").value = draft.levels[0].estimatedDeliveryDate || "";
+    draft.defaultEstimatedDeliveryDate = $("projectDate").value;
+  }
+  renderDraftLevels();
+}
+
 function syncDraftFromInputs() {
   if (!draft) return;
   draft.projectNumber = normalizeSpaces($("projectNumber").value).toUpperCase();
@@ -1014,6 +1058,8 @@ function buildMatrixColumns(showDelivered) {
 
 function columnMaterialStats(column, materialKey) {
   let required = 0;
+  let delivered = 0;
+  let excluded = 0;
   let outstanding = 0;
   let found = false;
   for (const level of column.levels) {
@@ -1021,10 +1067,12 @@ function columnMaterialStats(column, materialKey) {
       if (normalizeMaterialKey(material.material) !== materialKey) continue;
       found = true;
       required += Number(material.requiredLf || 0);
+      delivered += deliveredFor(level, material);
+      excluded += excludedFor(material);
       outstanding += outstandingFor(level, material);
     }
   }
-  return { found, required, outstanding, delivered: Math.max(0, required - outstanding) };
+  return { found, required, delivered, excluded, outstanding };
 }
 
 function levelHeaderHtml(project, level) {
@@ -1234,8 +1282,11 @@ function renderMatrix() {
     const cells = columns.map(column => {
       const stats = columnMaterialStats(column, key);
       if (!stats.found) return `<td class="cell-zero">—</td>`;
-      const cls = stats.outstanding <= EPSILON ? "cell-delivered" : stats.delivered > EPSILON ? "cell-partial" : "";
-      return `<td class="${cls}">${stats.outstanding <= EPSILON ? "0" : formatNumber(stats.outstanding)}</td>`;
+      const cls = stats.excluded > EPSILON
+        ? (stats.outstanding <= EPSILON ? "cell-excluded" : "cell-partial")
+        : stats.outstanding <= EPSILON ? "cell-delivered" : stats.delivered > EPSILON ? "cell-partial" : "";
+      const exclusionNote = stats.excluded > EPSILON ? `<div class="cell-subnote">${formatNumber(stats.excluded)} excluded</div>` : "";
+      return `<td class="${cls}">${stats.outstanding <= EPSILON ? "0" : formatNumber(stats.outstanding)}${exclusionNote}</td>`;
     }).join("");
     return `<tr><td class="material-col">${escapeHtml(materialName)}</td>${cells}</tr>`;
   }).join("");
@@ -1297,6 +1348,9 @@ const ACTIVITY_LABELS = {
   update_forecast_date: "Delivery date changed",
   record_delivery: "Delivery recorded",
   undo_delivery: "Delivery undone",
+  exclude_material_forecast: "Material excluded",
+  adjust_material_forecast: "Material exclusion adjusted",
+  restore_material_forecast: "Material restored to forecast",
   remove_level: "Level removed",
   delete_project: "Project deleted"
 };
@@ -1337,6 +1391,10 @@ function activityDetailText(row) {
     return [d.delivery_date ? `Delivery ${formatDate(d.delivery_date)}` : "", items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ") || "Delivery recorded";
   }
   if (row.action === "undo_delivery") return d.delivery_date ? `Reversed delivery dated ${formatDate(d.delivery_date)}` : "Delivery quantities restored";
+  if (["exclude_material_forecast", "adjust_material_forecast", "restore_material_forecast"].includes(row.action)) {
+    const amount = `${formatNumber(d.from_excluded_lf || 0)} → ${formatNumber(d.to_excluded_lf || 0)} LF excluded`;
+    return [d.material_name || "Material", amount, d.reason ? `Reason: ${d.reason}` : "", d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
+  }
   if (row.action === "update_forecast_date") return `${formatDate(d.from)} → ${formatDate(d.to)}`;
   if (row.action === "remove_level") return d.level_name ? `Removed ${d.level_name}` : "Level removed";
   if (row.action === "delete_project") {
@@ -1499,9 +1557,19 @@ function openDelivery(projectId, levelId) {
   $("forecastDateEdit").value = level.estimatedDeliveryDate || "";
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
+  $("deliveryMaterialSearch").value = "";
+  $("clearDeliveryMaterialSearch").classList.add("hidden");
   renderDeliveryItems();
   renderDeliveryHistory();
   $("deliveryDialog").showModal();
+}
+
+function applyDeliveryMaterialFilter() {
+  const query = normalizeSpaces($("deliveryMaterialSearch")?.value || "").toLowerCase();
+  $("clearDeliveryMaterialSearch")?.classList.toggle("hidden", !query);
+  document.querySelectorAll("#deliveryItems .delivery-material-row").forEach(row => {
+    row.classList.toggle("hidden", Boolean(query) && !String(row.dataset.materialSearch || "").includes(query));
+  });
 }
 
 function renderDeliveryItems() {
@@ -1509,16 +1577,100 @@ function renderDeliveryItems() {
   const { level } = activeDelivery;
   const rows = level.materials.map((material, index) => {
     const remaining = outstandingFor(level, material);
-    const delivered = Number(material.requiredLf) - remaining;
-    return `<tr>
+    const delivered = deliveredFor(level, material);
+    const excluded = excludedFor(material);
+    const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered);
+    const actionLabel = excluded > EPSILON ? "Adjust" : "Exclude";
+    return `<tr class="delivery-material-row" data-material-search="${escapeHtml(normalizeMaterialKey(material.material))}">
       <td>${escapeHtml(material.material)}</td>
       <td>${formatNumber(material.requiredLf)}</td>
       <td>${formatNumber(delivered)}</td>
+      <td class="material-excluded-cell">${excluded > EPSILON ? formatNumber(excluded) : "0"}</td>
       <td><strong>${formatNumber(remaining)}</strong></td>
       <td><input class="delivery-input" data-material-index="${index}" type="number" min="0" max="${remaining}" step="0.01" value="0" ${remaining <= EPSILON ? "disabled" : ""} /></td>
+      <td class="forecast-action-cell"><button type="button" class="mini-button exclude-material" data-material-id="${escapeHtml(material.id)}" ${maxExcludable <= EPSILON && excluded <= EPSILON ? "disabled" : ""}>${actionLabel}</button></td>
     </tr>`;
   }).join("");
-  $("deliveryItems").innerHTML = `<div class="table-wrap"><table class="delivery-table"><thead><tr><th>Material</th><th>Original</th><th>Delivered</th><th>Remaining</th><th>Deliver now</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  $("deliveryItems").innerHTML = `<div class="table-wrap"><table class="delivery-table"><thead><tr><th>Material</th><th>Original</th><th>Delivered</th><th>Excluded</th><th>Remaining</th><th>Deliver now</th><th>Forecast</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  applyDeliveryMaterialFilter();
+}
+
+function openMaterialExclusion(materialId) {
+  if (!activeDelivery) return;
+  const material = activeDelivery.level.materials.find(item => item.id === materialId);
+  if (!material) return;
+  const delivered = deliveredFor(activeDelivery.level, material);
+  const currentExcluded = excludedFor(material);
+  const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered);
+  activeMaterialExclusion = { materialId: material.id };
+  $("materialExclusionTitle").textContent = currentExcluded > EPSILON ? "Adjust Forecast Exclusion" : "Exclude Material from Forecast";
+  $("materialExclusionSummary").textContent = `${material.material} · Original ${formatNumber(material.requiredLf)} LF · Delivered ${formatNumber(delivered)} LF · Up to ${formatNumber(maxExcludable)} LF can be excluded.`;
+  $("materialExcludedLf").value = currentExcluded;
+  $("materialExcludedLf").max = maxExcludable;
+  $("materialExclusionReason").value = material.exclusionReason || "Customer supplied / pre-ordered";
+  $("materialExclusionNote").value = material.exclusionNote || "";
+  $("restoreMaterialForecast").classList.toggle("hidden", currentExcluded <= EPSILON);
+  $("materialExclusionDialog").showModal();
+  requestAnimationFrame(() => $("materialExcludedLf")?.focus());
+}
+
+async function saveMaterialExclusion({ restore = false } = {}) {
+  if (!activeDelivery || !activeMaterialExclusion) return;
+  const requestedValue = restore ? 0 : Number($("materialExcludedLf").value || 0);
+  if (!Number.isFinite(requestedValue) || requestedValue < -EPSILON) return alert("Enter a valid excluded quantity.");
+
+  const materialId = activeMaterialExclusion.materialId;
+  await refreshActiveDelivery();
+  if (!activeDelivery) return alert("This level no longer exists in the shared data.");
+  const material = activeDelivery.level.materials.find(item => item.id === materialId);
+  if (!material) return alert("This material no longer exists in the shared data.");
+
+  const delivered = deliveredFor(activeDelivery.level, material);
+  const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered);
+  const nextExcluded = restore ? 0 : requestedValue;
+  if (nextExcluded > maxExcludable + EPSILON) {
+    $("materialExcludedLf").max = maxExcludable;
+    return alert(`Excluded quantity must be between 0 and ${formatNumber(maxExcludable)} LF. Shared delivery data may have changed; review the updated limit.`);
+  }
+
+  const previousExcluded = excludedFor(material);
+  const reason = nextExcluded > EPSILON ? $("materialExclusionReason").value : "";
+  const note = nextExcluded > EPSILON ? normalizeSpaces($("materialExclusionNote").value) : "";
+  const result = await updateRows("materials", { id: `eq.${material.id}`, version: `eq.${material.version}` }, {
+    excluded_lf: nextExcluded,
+    exclusion_reason: reason || null,
+    exclusion_note: note || null,
+    updated_at: new Date().toISOString(),
+    version: material.version + 1
+  });
+  if (!result?.length) throw new Error("This material was changed by another user. The shared data will be refreshed before you try again.");
+
+  const action = nextExcluded <= EPSILON
+    ? "restore_material_forecast"
+    : previousExcluded <= EPSILON ? "exclude_material_forecast" : "adjust_material_forecast";
+  await recordActivity("level", activeDelivery.level.id, action, {
+    material_name: material.material,
+    original_lf: Number(material.requiredLf || 0),
+    delivered_lf: delivered,
+    from_excluded_lf: previousExcluded,
+    to_excluded_lf: nextExcluded,
+    remaining_lf: Math.max(0, Number(material.requiredLf || 0) - delivered - nextExcluded),
+    reason,
+    note
+  });
+
+  const projectId = activeDelivery.project.id;
+  const levelId = activeDelivery.level.id;
+  await syncFromCloud({ silent: true });
+  const project = state.projects.find(item => item.id === projectId);
+  const level = project?.levels.find(item => item.id === levelId);
+  activeDelivery = project && level ? { project, level } : null;
+  activeMaterialExclusion = null;
+  $("materialExclusionDialog").close("saved");
+  if (activeDelivery) {
+    renderDeliveryItems();
+    renderDeliveryHistory();
+  }
 }
 
 function renderDeliveryHistory() {
@@ -1990,34 +2142,19 @@ function wireEvents() {
   $("levelEditor").addEventListener("change", event => {
     const input = event.target.closest(".level-date");
     if (!input || !draft) return;
-    syncDraftFromInputs();
     const levelIndex = Number(input.dataset.levelIndex);
+    const nextDate = input.value;
+    syncDraftFromInputs();
+    applyManualDraftLevelDate(levelIndex, nextDate);
+  });
 
-    draft.levels[levelIndex].dateSource = draft.levels[levelIndex].estimatedDeliveryDate ? "manual" : "";
-
-    if ($("applyDateAll").checked) {
-      // A manual exception breaks the "same date for all" rule, while preserving all current dates.
-      $("applyDateAll").checked = false;
-      renderDraftLevels();
-      return;
-    }
-
-    if ($("staggerWeekly").checked) {
-      // The edited level becomes a new anchor and every later level remains one week apart.
-      if (levelIndex === 0) {
-        $("projectDate").value = draft.levels[0].estimatedDeliveryDate || "";
-        draft.defaultEstimatedDeliveryDate = $("projectDate").value;
-      }
-      continueWeeklyScheduleFrom(levelIndex);
-      renderDraftLevels();
-      return;
-    }
-
-    if (levelIndex === 0) {
-      $("projectDate").value = draft.levels[0].estimatedDeliveryDate || "";
-      draft.defaultEstimatedDeliveryDate = $("projectDate").value;
-    }
-    renderDraftLevels();
+  $("deliveryPreview").addEventListener("change", event => {
+    const input = event.target.closest(".preview-level-date");
+    if (!input || !draft) return;
+    const levelIndex = Number(input.dataset.levelIndex);
+    const nextDate = input.value;
+    syncDraftFromInputs();
+    applyManualDraftLevelDate(levelIndex, nextDate);
   });
 
   $("levelEditor").addEventListener("click", event => {
@@ -2093,6 +2230,16 @@ function wireEvents() {
   });
 
   $("updateForecastDate").addEventListener("click", updateForecastDate);
+  $("deliveryMaterialSearch").addEventListener("input", applyDeliveryMaterialFilter);
+  $("clearDeliveryMaterialSearch").addEventListener("click", () => {
+    $("deliveryMaterialSearch").value = "";
+    applyDeliveryMaterialFilter();
+    $("deliveryMaterialSearch").focus();
+  });
+  $("deliveryItems").addEventListener("click", event => {
+    const button = event.target.closest(".exclude-material");
+    if (button) openMaterialExclusion(button.dataset.materialId);
+  });
   $("fillEntireLevel").addEventListener("click", () => {
     if (!activeDelivery) return;
     document.querySelectorAll(".delivery-input").forEach(input => {
@@ -2116,11 +2263,29 @@ function wireEvents() {
     catch (error) { console.error(error); alert(error.message); }
   });
   $("removeLevel").addEventListener("click", removeActiveLevel);
+  $("saveMaterialExclusion").addEventListener("click", async () => {
+    const button = $("saveMaterialExclusion");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    try { await saveMaterialExclusion(); }
+    catch (error) { console.error(error); alert(error.message); await syncFromCloud({ silent: true, rebindActive: true }); }
+    finally { button.disabled = false; button.textContent = "Save Adjustment"; }
+  });
+  $("restoreMaterialForecast").addEventListener("click", async () => {
+    const button = $("restoreMaterialForecast");
+    button.disabled = true;
+    button.textContent = "Restoring…";
+    try { await saveMaterialExclusion({ restore: true }); }
+    catch (error) { console.error(error); alert(error.message); await syncFromCloud({ silent: true, rebindActive: true }); }
+    finally { button.disabled = false; button.textContent = "Restore to Forecast"; }
+  });
+  $("materialExclusionDialog").addEventListener("close", () => { activeMaterialExclusion = null; });
 
   $("saveProjectEdit").addEventListener("click", saveProjectEdit);
   $("openDeleteProject").addEventListener("click", openDeleteProjectDialog);
   $("confirmDeleteProject").addEventListener("click", deleteActiveProject);
   wireBackdropClose($("deliveryDialog"));
+  wireBackdropClose($("materialExclusionDialog"));
   wireBackdropClose($("projectEditDialog"));
   wireBackdropClose($("deleteProjectDialog"));
   wireReviewBackdropClose();

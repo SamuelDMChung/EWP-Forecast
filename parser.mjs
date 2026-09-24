@@ -152,6 +152,43 @@ function splitDefaultFilteredMaterials(materials) {
   return { included, filteredMaterials };
 }
 
+function isTotalLengthsPageFurniture(line) {
+  const text = normalizeSpaces(line);
+  return /^(?:Page\s+\d+(?:\s+of\s+\d+)?|\(†\)|\(‡\)|Refer to\b|Layout Material List Report$|Job\s*:|Length\s+Product$|Design Date\b|Number of Sheets\b)/i.test(text)
+    || /^\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM)?)?$/i.test(text);
+}
+
+function isTotalLengthsSectionBoundary(line) {
+  const text = normalizeSpaces(line);
+  return /^(?:Level\s*:|Products?$|Accessories?$|Blocking$|Connectors?$|Connector Summary$|Hangers?$|Hardware$)/i.test(text);
+}
+
+function collectTotalLengthMaterials(region) {
+  const materials = [];
+  let capturing = false;
+
+  for (const line of region) {
+    if (/^Total Lengths$/i.test(line)) {
+      capturing = true;
+      continue;
+    }
+    if (!capturing) continue;
+
+    // Physical PDF page breaks are not logical Total Lengths boundaries. Weyerhaeuser
+    // reports repeat footer/header furniture around the break before the material rows
+    // continue, so ignore that furniture and keep the same capture state alive.
+    if (isTotalLengthsPageFurniture(line)) continue;
+
+    // Stop only when the report actually enters another logical section or level.
+    if (isTotalLengthsSectionBoundary(line)) break;
+
+    const parsed = parseTotalLengthLine(line);
+    if (parsed) materials.push(parsed);
+  }
+
+  return materials;
+}
+
 export function parseMaterialReportLines(linesInput, filename = "") {
   const lines = linesInput.map(normalizeSpaces).filter(Boolean);
   const meta = extractProjectMeta(lines, filename);
@@ -167,19 +204,7 @@ export function parseMaterialReportLines(linesInput, filename = "") {
     const start = levelPositions[i].index;
     const end = i + 1 < levelPositions.length ? levelPositions[i + 1].index : lines.length;
     const region = lines.slice(start, end);
-    const totalIndexes = region
-      .map((line, idx) => (/^Total Lengths$/i.test(line) ? idx : -1))
-      .filter(idx => idx >= 0);
-
-    const materials = [];
-    for (const totalIdx of totalIndexes) {
-      for (let j = totalIdx + 1; j < region.length; j += 1) {
-        const line = region[j];
-        if (/^(Page \d+|\(†\)|Refer to |Level\s*:|Products$|Accessories$|Blocking$)/i.test(line)) break;
-        const parsed = parseTotalLengthLine(line);
-        if (parsed) materials.push(parsed);
-      }
-    }
+    const materials = collectTotalLengthMaterials(region);
 
     if (materials.length) {
       const aggregated = dedupeAndAggregateMaterials(materials);
@@ -190,20 +215,11 @@ export function parseMaterialReportLines(linesInput, filename = "") {
 
   // Fallback for reports where text extraction loses the Level label but still has one Total Lengths section.
   if (!levels.length) {
-    const totalIdx = lines.findIndex(line => /^Total Lengths$/i.test(line));
-    if (totalIdx >= 0) {
-      const materials = [];
-      for (let j = totalIdx + 1; j < lines.length; j += 1) {
-        const line = lines[j];
-        if (/^(Page \d+|\(†\)|Refer to )/i.test(line)) break;
-        const parsed = parseTotalLengthLine(line);
-        if (parsed) materials.push(parsed);
-      }
-      if (materials.length) {
-        const aggregated = dedupeAndAggregateMaterials(materials);
-        const { included, filteredMaterials } = splitDefaultFilteredMaterials(aggregated);
-        levels.push({ name: "Level 1", materials: included, filteredMaterials });
-      }
+    const materials = collectTotalLengthMaterials(lines);
+    if (materials.length) {
+      const aggregated = dedupeAndAggregateMaterials(materials);
+      const { included, filteredMaterials } = splitDefaultFilteredMaterials(aggregated);
+      levels.push({ name: "Level 1", materials: included, filteredMaterials });
     }
   }
 

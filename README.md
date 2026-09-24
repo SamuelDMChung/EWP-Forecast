@@ -1,6 +1,50 @@
-# EWP Material Forecast — V0.12
+# EWP Material Forecast — V0.14
 
 **Developed by Samuel Chung @ Griff**
+
+
+## V0.14 changes
+
+- Fixes PDF parsing when a **Total Lengths** table continues onto the next PDF page.
+- Page footers/headers such as page numbers, timestamps, the Weyerhaeuser literature footer, repeated **Layout Material List Report** title and **Job:** line are ignored while the active Total Lengths table continues.
+- Total Lengths capture now stops at a real report section boundary instead of the physical end of a PDF page.
+- Existing Web Stiffener filtering still applies to continuation rows, including stiffeners appearing only on the following page.
+- No Supabase schema, RLS, Realtime or configuration change is required for V0.14.
+- All V0.13 functionality is preserved.
+
+## V0.13 changes
+
+- Shortens the weekly scheduling option to **Auto-set levels 1 week apart**.
+- Makes the inline **Delivery date preview** editable. Date changes there stay synchronized with the full level editor and preserve the V0.12 same-date / weekly-anchor behavior.
+- Adds a compact **Search materials…** field inside the level Delivery / Manage window so long material lists can be filtered without scrolling.
+- Adds auditable **Exclude from Forecast** adjustments for materials from **Projects & Materials → Manage**. Exclusions can be full or partial, preserve the original PDF LF, reduce the Monthly Forecast immediately, can be adjusted/restored later, and are written to Entry History.
+- Projects & Materials cells show excluded LF when applicable. Completion/outstanding calculations treat excluded LF as resolved forecast quantity without recording it as a delivery.
+- Existing Supabase Auth, RLS, Realtime, deliveries, project deletion, Web Stiffener behavior and lazy Entry History are preserved.
+
+### Required Supabase change for V0.13
+
+Run the V0.13 SQL **before deploying the V0.13 frontend**. It adds three columns to the existing `materials` table; no new table, RLS policy or Realtime publication is required because `materials` is already protected and published.
+
+```sql
+alter table public.materials
+  add column if not exists excluded_lf numeric not null default 0,
+  add column if not exists exclusion_reason text,
+  add column if not exists exclusion_note text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'materials_excluded_lf_valid'
+      and conrelid = 'public.materials'::regclass
+  ) then
+    alter table public.materials
+      add constraint materials_excluded_lf_valid
+      check (excluded_lf >= 0 and excluded_lf <= original_lf);
+  end if;
+end $$;
+```
 
 ## V0.12 changes
 
@@ -83,7 +127,7 @@ Do not enable RLS before the V0.9 login test unless the required policies are cr
 - Compact matrix cards, sticky project headers, frozen material column and top horizontal scrollbar.
 - Monthly outstanding-material forecast.
 - V0.5 local-browser data migration.
-- CSV and JSON export/import tools.
+- CSV export tools.
 
 ## Supabase connection
 

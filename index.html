@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.12 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.14 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -66,7 +66,7 @@
               <label class="delivery-date-field">Estimated Delivery Date<input id="projectDate" type="date" /></label>
               <div class="schedule-options" aria-label="Delivery date scheduling options">
                 <label class="checkbox-row compact"><input id="applyDateAll" type="checkbox" /> Apply this delivery date to all levels</label>
-                <label class="checkbox-row compact"><input id="staggerWeekly" type="checkbox" /> Auto-set each next level to 1 week after the previous level</label>
+                <label class="checkbox-row compact"><input id="staggerWeekly" type="checkbox" /> Auto-set levels 1 week apart</label>
               </div>
               <div id="deliveryPreview" class="delivery-preview hidden" aria-live="polite"></div>
             </div>
@@ -200,6 +200,12 @@
         <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Delivery Inputs</button>
       </div>
 
+      <div class="delivery-material-search">
+        <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+        <input id="deliveryMaterialSearch" type="search" placeholder="Search materials…" autocomplete="off" aria-label="Search delivery materials" />
+        <button id="clearDeliveryMaterialSearch" type="button" class="search-clear hidden" aria-label="Clear material search">×</button>
+      </div>
+
       <div id="deliveryItems"></div>
 
       <div class="dialog-footer">
@@ -209,6 +215,39 @@
       </div>
 
       <div id="deliveryHistory" class="history"></div>
+    </form>
+  </dialog>
+
+  <dialog id="materialExclusionDialog" class="dialog compact-dialog" aria-labelledby="materialExclusionTitle">
+    <form method="dialog" id="materialExclusionForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">FORECAST</p>
+          <h2 id="materialExclusionTitle">Exclude Material from Forecast</h2>
+          <p id="materialExclusionSummary" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid exclusion-form-grid">
+        <label>Exclude from Forecast (LF)<input id="materialExcludedLf" type="number" min="0" step="0.01" /></label>
+        <label>Reason
+          <select id="materialExclusionReason">
+            <option value="Customer supplied / pre-ordered">Customer supplied / pre-ordered</option>
+            <option value="No longer required">No longer required</option>
+            <option value="Duplicate">Duplicate</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label class="full">Note<input id="materialExclusionNote" placeholder="Optional note" /></label>
+      </div>
+      <p class="small-note exclusion-help">The original PDF quantity stays unchanged. Excluded LF is removed only from the outstanding forecast and can be restored later.</p>
+
+      <div class="dialog-footer">
+        <button id="restoreMaterialForecast" type="button" class="button secondary hidden">Restore to Forecast</button>
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="saveMaterialExclusion" type="button" class="button primary">Save Adjustment</button>
+      </div>
     </form>
   </dialog>
 
