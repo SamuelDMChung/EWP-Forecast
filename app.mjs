@@ -5,11 +5,11 @@ import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 16;
 const EPSILON = 0.0001;
 const HISTORY_PAGE_SIZE = 100;
 
-let state = { version: SCHEMA_VERSION, projects: [] };
+let state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], incomingOrders: [] };
 let draft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
@@ -161,6 +161,7 @@ function migrateLegacyState(parsed) {
       customer: project.customer || "",
       sales: project.sales || "",
       address: project.address || "",
+      projectType: project.projectType === "sfd" ? "sfd" : "multi",
       defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate || "",
       sourceFileName: project.sourceFileName || "",
       createdAt: project.createdAt || new Date().toISOString(),
@@ -170,6 +171,7 @@ function migrateLegacyState(parsed) {
         id: level.id || uid(),
         name: level.name || `Level ${levelIndex + 1}`,
         estimatedDeliveryDate: level.estimatedDeliveryDate || "",
+        workflowStatus: level.workflowStatus === "spruce" ? "spruce" : "forecast",
         displayOrder: Number(level.displayOrder ?? levelIndex),
         version: Number(level.version || 1),
         materials: (level.materials || []).map(material => ({
@@ -193,7 +195,9 @@ function migrateLegacyState(parsed) {
           }))
         })) : []
       }))
-    }))
+    })),
+    inventoryMaterials: [],
+    incomingOrders: []
   };
 }
 
@@ -226,6 +230,7 @@ function mapCloudRows(rows) {
       customer: row.customer || "",
       sales: row.sales || "",
       address: row.address_project_name || "",
+      projectType: row.project_type === "sfd" ? "sfd" : "multi",
       defaultEstimatedDeliveryDate: row.default_delivery_date || "",
       createdAt: row.created_at || "",
       updatedAt: row.updated_at || "",
@@ -243,6 +248,8 @@ function mapCloudRows(rows) {
       projectId: row.project_id,
       name: row.level_name || "",
       estimatedDeliveryDate: row.estimated_delivery_date || "",
+      workflowStatus: row.workflow_status === "spruce" ? "spruce" : "forecast",
+      isActive: row.is_active !== false,
       displayOrder: Number(row.display_order || 0),
       createdAt: row.created_at || "",
       updatedAt: row.updated_at || "",
@@ -251,7 +258,7 @@ function mapCloudRows(rows) {
       deliveries: []
     };
     levelMap.set(level.id, level);
-    project.levels.push(level);
+    if (level.isActive) project.levels.push(level);
   }
 
   const materialMap = new Map();
@@ -266,12 +273,13 @@ function mapCloudRows(rows) {
       excludedLf: Number(row.excluded_lf || 0),
       exclusionReason: row.exclusion_reason || "",
       exclusionNote: row.exclusion_note || "",
+      isActive: row.is_active !== false,
       createdAt: row.created_at || "",
       updatedAt: row.updated_at || "",
       version: Number(row.version || 1)
     };
     materialMap.set(material.id, material);
-    level.materials.push(material);
+    if (level.isActive && material.isActive) level.materials.push(material);
   }
 
   // Rows written together share the exact delivered_at timestamp and note, so they reconstruct one delivery batch.
@@ -299,11 +307,35 @@ function mapCloudRows(rows) {
     batch.items.push({ materialId: material.id, material: material.material, lf: Number(row.delivered_lf || 0) });
   }
 
+  const inventoryMaterials = (rows.inventoryMaterials || []).map(row => ({
+    id: row.id,
+    material: row.material_name || "",
+    onHandLf: Number(row.on_hand_lf || 0),
+    leadTimeWeeks: Number(row.lead_time_weeks ?? 6),
+    note: row.note || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+    version: Number(row.version || 1)
+  }));
+
+  const incomingOrders = (rows.incomingOrders || []).map(row => ({
+    id: row.id,
+    material: row.material_name || "",
+    quantityLf: Number(row.quantity_lf || 0),
+    receivedLf: Number(row.received_lf || 0),
+    expectedDate: row.expected_date || "",
+    reference: row.reference || "",
+    note: row.note || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+    version: Number(row.version || 1)
+  }));
+
   const projects = [...projectMap.values()];
   projects.forEach(project => project.levels.sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name, undefined, { numeric: true })));
-  return { version: SCHEMA_VERSION, projects };
+  inventoryMaterials.sort((a, b) => a.material.localeCompare(b.material, undefined, { numeric: true }));
+  return { version: SCHEMA_VERSION, projects, inventoryMaterials, incomingOrders };
 }
-
 function hasOpenDialog() {
   return $("deliveryDialog")?.open || $("materialExclusionDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
 }
@@ -543,6 +575,17 @@ function statusLabel(status) {
   return "UPCOMING";
 }
 
+function planningStatus(level) {
+  if (levelStats(level).outstanding <= EPSILON) return "delivered";
+  return level.workflowStatus === "spruce" ? "spruce" : "forecast";
+}
+
+function planningStatusLabel(status) {
+  if (status === "spruce") return "IN SPRUCE";
+  if (status === "delivered") return "DELIVERED";
+  return "FORECAST";
+}
+
 function projectTitle(project) { return project.address || "Address / Project Name not entered"; }
 function projectMetaHtml(project) {
   const projectId = [project.projectNumber, project.revision].filter(Boolean).join(" · ") || "No project #";
@@ -550,7 +593,7 @@ function projectMetaHtml(project) {
   return `
     <div class="project-title${missingTitle ? " project-title-missing" : ""}">${escapeHtml(projectTitle(project))}</div>
     <div class="project-meta-line">${escapeHtml(projectId)} · Customer: ${escapeHtml(project.customer || "—")}</div>
-    <div class="project-meta-line">Sales: ${escapeHtml(project.sales || "—")}</div>`;
+    <div class="project-meta-line">Sales: ${escapeHtml(project.sales || "—")} · ${project.projectType === "sfd" ? "SFD" : "Multi"}</div>`;
 }
 
 function progressHtml(percent, label) {
@@ -576,6 +619,7 @@ async function handlePdf(file) {
       revision: parsed.revision || "",
       customer: "",
       sales: "",
+      projectType: $("projectType")?.value === "sfd" ? "sfd" : "multi",
       address: parsed.address || "",
       defaultEstimatedDeliveryDate: $("projectDate").value || "",
       levels: parsed.levels.map(level => ({
@@ -594,7 +638,9 @@ async function handlePdf(file) {
     $("revision").value = draft.revision;
     $("customer").value = draft.customer;
     $("sales").value = draft.sales;
+    $("projectType").value = draft.projectType || "multi";
     $("address").value = draft.address;
+    updateProjectTypeUi();
     $("reviewCard").classList.remove("hidden");
     const filteredCount = draft.levels.reduce((n, level) => n + (level.filteredMaterials || []).length, 0);
     status.className = filteredCount ? "status warning" : "status success";
@@ -679,6 +725,16 @@ function renderDeliveryPreview() {
   preview.classList.remove("hidden");
 }
 
+
+function updateProjectTypeUi() {
+  const isSfd = $("projectType")?.value === "sfd";
+  const hint = $("projectTypeHint");
+  if (hint) hint.textContent = isSfd
+    ? "SFD dates are optional. Outstanding SFD material is grouped into the purchasing buffer unless the package is marked In Spruce."
+    : "Multi-family levels appear in the 6-week delivery schedule. Estimated delivery dates are required.";
+  if (draft) draft.projectType = isSfd ? "sfd" : "multi";
+}
+
 function applyManualDraftLevelDate(levelIndex, nextDate) {
   if (!draft?.levels?.[levelIndex]) return;
   draft.levels[levelIndex].estimatedDeliveryDate = nextDate || "";
@@ -707,6 +763,7 @@ function syncDraftFromInputs() {
   draft.revision = normalizeSpaces($("revision").value).toUpperCase();
   draft.customer = normalizeSpaces($("customer").value);
   draft.sales = normalizeSpaces($("sales").value);
+  draft.projectType = $("projectType")?.value === "sfd" ? "sfd" : "multi";
   draft.address = normalizeSpaces($("address").value);
   draft.defaultEstimatedDeliveryDate = $("projectDate").value;
 
@@ -731,10 +788,12 @@ function resetIntake() {
   $("revision").value = "";
   $("customer").value = "";
   $("sales").value = "";
+  $("projectType").value = "multi";
   $("address").value = "";
   $("projectDate").value = "";
   $("applyDateAll").checked = false;
   $("staggerWeekly").checked = false;
+  updateProjectTypeUi();
   $("parseStatus").className = "status muted";
   $("parseStatus").textContent = "No PDF selected.";
   $("reviewCard").classList.add("hidden");
@@ -753,6 +812,7 @@ function projectToCloudRows(project) {
     address_project_name: project.address || null,
     customer: project.customer || null,
     sales: project.sales || null,
+    project_type: project.projectType === "sfd" ? "sfd" : "multi",
     default_delivery_date: project.defaultEstimatedDeliveryDate || null,
     version: 1
   };
@@ -771,6 +831,8 @@ function projectToCloudRows(project) {
       project_id: projectId,
       level_name: level.name,
       estimated_delivery_date: level.estimatedDeliveryDate || null,
+      workflow_status: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+      is_active: true,
       display_order: levelIndex,
       version: 1
     });
@@ -783,6 +845,7 @@ function projectToCloudRows(project) {
         level_id: levelId,
         material_name: material.material,
         original_lf: Number(material.requiredLf || 0),
+        is_active: true,
         version: 1
       });
     });
@@ -874,6 +937,7 @@ function validateDraftForReview() {
   }
   syncDraftFromInputs();
   const projectDate = $("projectDate").value;
+  const isMulti = draft.projectType !== "sfd";
 
   if (!draft.projectNumber) {
     showIntakeValidation("Project # is required.", $("projectNumber"));
@@ -903,7 +967,7 @@ function validateDraftForReview() {
       showIntakeValidation("Every level needs a name.", levelNameInput);
       return false;
     }
-    if (!level.estimatedDeliveryDate) {
+    if (isMulti && !level.estimatedDeliveryDate) {
       showIntakeValidation(`Enter an estimated delivery date for ${level.name}.`, levelDateInput);
       return false;
     }
@@ -927,7 +991,7 @@ function projectReviewSummaryHtml() {
           <span>${included.length} material line${included.length === 1 ? "" : "s"} · ${formatNumber(levelLf)} LF</span>
         </div>
         <div class="review-level-date">
-          <strong>${escapeHtml(formatDate(level.estimatedDeliveryDate))}</strong>
+          <strong>${escapeHtml(level.estimatedDeliveryDate ? formatDate(level.estimatedDeliveryDate) : "Not scheduled")}</strong>
           ${level.estimatedDeliveryDate ? `<span class="date-source-badge ${level.dateSource === "manual" ? "manual" : "auto"}">${level.dateSource === "manual" ? "Manual" : "Auto"}</span>` : ""}
         </div>
       </div>`;
@@ -946,11 +1010,12 @@ function projectReviewSummaryHtml() {
         <span><strong>Revision</strong> ${escapeHtml(draft.revision || "—")}</span>
         <span><strong>Customer</strong> ${escapeHtml(draft.customer || "—")}</span>
         <span><strong>Sales</strong> ${escapeHtml(draft.sales || "—")}</span>
+        <span><strong>Project Type</strong> ${draft.projectType === "sfd" ? "SFD" : "Multi-family"}</span>
       </div>
     </section>
     <section class="review-section">
       <div class="review-section-heading">
-        <h3>Estimated Delivery Dates</h3>
+        <h3>${draft.projectType === "sfd" ? "Package Dates (optional for SFD)" : "Estimated Delivery Dates"}</h3>
         <span>${draft.levels.length} package${draft.levels.length === 1 ? "" : "s"}</span>
       </div>
       <div class="review-level-list">${levelRows}</div>
@@ -977,6 +1042,130 @@ function openProjectReview() {
   requestAnimationFrame(() => $("confirmProjectSave")?.focus());
 }
 
+async function reconcileProjectRevision(existing, projectRecord) {
+  const now = new Date().toISOString();
+  const updatedProject = await updateRows("projects", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, {
+    project_number: projectRecord.projectNumber,
+    revision: projectRecord.revision || null,
+    customer: projectRecord.customer || null,
+    sales: projectRecord.sales || null,
+    address_project_name: projectRecord.address || null,
+    project_type: projectRecord.projectType === "sfd" ? "sfd" : "multi",
+    default_delivery_date: projectRecord.defaultEstimatedDeliveryDate || null,
+    updated_at: now,
+    version: existing.version + 1
+  });
+  if (!updatedProject?.length) throw new Error("This project changed while the revision was being applied. Refresh and try again.");
+
+  const usedLevelIds = new Set();
+  const summary = { levelsAdded: 0, levelsUpdated: 0, levelsArchived: 0, materialsAdded: 0, materialsUpdated: 0, materialsArchived: 0, exclusionsAdjusted: 0 };
+
+  for (let levelIndex = 0; levelIndex < projectRecord.levels.length; levelIndex += 1) {
+    const incomingLevel = projectRecord.levels[levelIndex];
+    const levelKey = normalizeSpaces(incomingLevel.name).toLowerCase();
+    const existingLevel = (existing.levels || []).find(level => !usedLevelIds.has(level.id) && normalizeSpaces(level.name).toLowerCase() === levelKey);
+
+    if (!existingLevel) {
+      const levelId = uid();
+      await insertRows("levels", {
+        id: levelId,
+        project_id: existing.id,
+        level_name: incomingLevel.name,
+        estimated_delivery_date: incomingLevel.estimatedDeliveryDate || null,
+        workflow_status: "forecast",
+        is_active: true,
+        display_order: levelIndex,
+        version: 1
+      });
+      const materials = validDraftMaterials(incomingLevel).map(material => ({
+        id: uid(),
+        level_id: levelId,
+        material_name: material.material,
+        original_lf: Number(material.requiredLf || 0),
+        excluded_lf: 0,
+        is_active: true,
+        version: 1
+      }));
+      if (materials.length) await insertRows("materials", materials);
+      summary.levelsAdded += 1;
+      summary.materialsAdded += materials.length;
+      continue;
+    }
+
+    usedLevelIds.add(existingLevel.id);
+    const levelUpdated = await updateRows("levels", { id: `eq.${existingLevel.id}`, version: `eq.${existingLevel.version}` }, {
+      level_name: incomingLevel.name,
+      estimated_delivery_date: incomingLevel.estimatedDeliveryDate || null,
+      display_order: levelIndex,
+      is_active: true,
+      updated_at: now,
+      version: existingLevel.version + 1
+    });
+    if (!levelUpdated?.length) throw new Error(`${existingLevel.name} changed while the revision was being applied.`);
+    summary.levelsUpdated += 1;
+
+    const usedMaterialIds = new Set();
+    for (const incomingMaterial of validDraftMaterials(incomingLevel)) {
+      const materialKey = normalizeMaterialKey(incomingMaterial.material);
+      const existingMaterial = (existingLevel.materials || []).find(material => !usedMaterialIds.has(material.id) && normalizeMaterialKey(material.material) === materialKey);
+      if (!existingMaterial) {
+        await insertRows("materials", {
+          id: uid(),
+          level_id: existingLevel.id,
+          material_name: incomingMaterial.material,
+          original_lf: Number(incomingMaterial.requiredLf || 0),
+          excluded_lf: 0,
+          is_active: true,
+          version: 1
+        });
+        summary.materialsAdded += 1;
+        continue;
+      }
+
+      usedMaterialIds.add(existingMaterial.id);
+      const nextRequired = Number(incomingMaterial.requiredLf || 0);
+      const delivered = deliveredFor(existingLevel, existingMaterial);
+      const priorExcluded = excludedFor(existingMaterial);
+      const nextExcluded = Math.min(priorExcluded, Math.max(0, nextRequired - delivered));
+      if (Math.abs(nextExcluded - priorExcluded) > EPSILON) summary.exclusionsAdjusted += 1;
+      const materialUpdated = await updateRows("materials", { id: `eq.${existingMaterial.id}`, version: `eq.${existingMaterial.version}` }, {
+        material_name: incomingMaterial.material,
+        original_lf: nextRequired,
+        excluded_lf: nextExcluded,
+        is_active: true,
+        updated_at: now,
+        version: existingMaterial.version + 1
+      });
+      if (!materialUpdated?.length) throw new Error(`${incomingMaterial.material} changed while the revision was being applied.`);
+      summary.materialsUpdated += 1;
+    }
+
+    for (const existingMaterial of existingLevel.materials || []) {
+      if (usedMaterialIds.has(existingMaterial.id)) continue;
+      const archived = await updateRows("materials", { id: `eq.${existingMaterial.id}`, version: `eq.${existingMaterial.version}` }, {
+        is_active: false,
+        updated_at: now,
+        version: existingMaterial.version + 1
+      });
+      if (!archived?.length) throw new Error(`${existingMaterial.material} changed while the revision was being applied.`);
+      summary.materialsArchived += 1;
+    }
+  }
+
+  for (const existingLevel of existing.levels || []) {
+    if (usedLevelIds.has(existingLevel.id)) continue;
+    const archived = await updateRows("levels", { id: `eq.${existingLevel.id}`, version: `eq.${existingLevel.version}` }, {
+      is_active: false,
+      updated_at: now,
+      version: existingLevel.version + 1
+    });
+    if (!archived?.length) throw new Error(`${existingLevel.name} changed while the revision was being applied.`);
+    summary.levelsArchived += 1;
+  }
+
+  return summary;
+}
+
 async function persistDraftProject() {
   if (!draft) return;
   if (!validateDraftForReview()) {
@@ -991,7 +1180,7 @@ async function persistDraftProject() {
     await syncFromCloud({ silent: true });
     const existing = state.projects.find(project => project.projectNumber.toLowerCase() === draft.projectNumber.toLowerCase());
     if (existing) {
-      const message = `Project ${draft.projectNumber} already exists${existing.revision ? ` (${existing.revision})` : ""}.\n\nReplace it with ${draft.revision || "this upload"}?\n\nExisting delivery history will be removed because the project quantities may have changed.`;
+      const message = `Project ${draft.projectNumber} already exists${existing.revision ? ` (${existing.revision})` : ""}.\n\nApply ${draft.revision || "this upload"} as a revision?\n\nExisting deliveries and audit history will be preserved. Matching levels/materials will be updated, new items added, and items removed by the revision archived from the active forecast.`;
       if (!confirm(message)) return;
     }
 
@@ -1000,17 +1189,41 @@ async function persistDraftProject() {
       revision: draft.revision,
       customer: draft.customer,
       sales: draft.sales,
+      projectType: draft.projectType === "sfd" ? "sfd" : "multi",
       address: draft.address,
       defaultEstimatedDeliveryDate: draft.defaultEstimatedDeliveryDate,
       levels: draft.levels.map(level => ({
         ...level,
+        workflowStatus: "forecast",
         materials: validDraftMaterials(level)
       }))
     };
-    const newProjectId = await createProjectGraph(projectRecord);
-    if (existing) await deleteRows("projects", { id: `eq.${existing.id}` });
-    await recordActivity("project", newProjectId, existing ? "replace_project" : "create_project", { project_number: draft.projectNumber, revision: draft.revision, address_project_name: draft.address, customer: draft.customer, sales: draft.sales });
-    setProjectCollapsed(newProjectId, draft.levels.length > 1);
+
+    let projectId;
+    if (existing) {
+      const summary = await reconcileProjectRevision(existing, projectRecord);
+      projectId = existing.id;
+      await recordActivity("project", projectId, "apply_revision", {
+        project_number: draft.projectNumber,
+        from_revision: existing.revision || "",
+        to_revision: draft.revision || "",
+        address_project_name: draft.address,
+        project_type: projectRecord.projectType,
+        ...summary
+      });
+    } else {
+      projectId = await createProjectGraph(projectRecord);
+      await recordActivity("project", projectId, "create_project", {
+        project_number: draft.projectNumber,
+        revision: draft.revision,
+        address_project_name: draft.address,
+        customer: draft.customer,
+        sales: draft.sales,
+        project_type: projectRecord.projectType
+      });
+    }
+
+    setProjectCollapsed(projectId, draft.levels.length > 1);
     if ($("projectReviewDialog")?.open) $("projectReviewDialog").close("saved");
     resetIntake();
     await syncFromCloud({ silent: true });
@@ -1077,14 +1290,15 @@ function columnMaterialStats(column, materialKey) {
 
 function levelHeaderHtml(project, level) {
   const stats = levelStats(level);
+  const plan = planningStatus(level);
   const multiLevel = (project.levels || []).length > 1;
   return `<th class="project-col level-project-col">
     <div class="project-header-card">
       ${projectMetaHtml(project)}
-      <div class="operational-line"><strong>${escapeHtml(level.name)}</strong> · ${escapeHtml(formatDate(level.estimatedDeliveryDate))}</div>
+      <div class="operational-line"><strong>${escapeHtml(level.name)}</strong> · ${escapeHtml(level.estimatedDeliveryDate ? formatDate(level.estimatedDeliveryDate) : "No date")}</div>
       ${progressHtml(stats.percent, "level complete")}
       <div class="project-card-actions">
-        <span class="status-badge ${stats.status}">${statusLabel(stats.status)}</span>
+        <span class="status-badge workflow-${plan}">${planningStatusLabel(plan)}</span>
         <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage</button>
         <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
         ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse</button>` : ""}
@@ -1104,7 +1318,7 @@ function collapsedProjectHeaderHtml(project) {
       <div class="package-line">${stats.packagesRemaining} ${packageWord} remaining</div>
       ${progressHtml(stats.percent, "overall complete")}
       <div class="project-card-actions">
-        <span class="status-badge ${stats.status}">${statusLabel(stats.status)}</span>
+        <span class="status-badge workflow-${next ? planningStatus(next) : "delivered"}">${planningStatusLabel(next ? planningStatus(next) : "delivered")}</span>
         <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
         <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand</button>
       </div>
@@ -1120,6 +1334,7 @@ function openProjectEdit(projectId) {
   $("editRevision").value = project.revision || "";
   $("editCustomer").value = project.customer || "";
   $("editSales").value = project.sales || "";
+  $("editProjectType").value = project.projectType === "sfd" ? "sfd" : "multi";
   $("editAddress").value = project.address || "";
   $("editProjectDate").value = project.defaultEstimatedDeliveryDate || "";
   $("editApplyDateAll").checked = false;
@@ -1134,6 +1349,7 @@ async function saveProjectEdit() {
   const revision = normalizeSpaces($("editRevision").value).toUpperCase();
   const customer = normalizeSpaces($("editCustomer").value);
   const sales = normalizeSpaces($("editSales").value);
+  const projectType = $("editProjectType")?.value === "sfd" ? "sfd" : "multi";
   const address = normalizeSpaces($("editAddress").value);
   const defaultDate = $("editProjectDate").value;
   const applyAll = $("editApplyDateAll").checked;
@@ -1141,6 +1357,10 @@ async function saveProjectEdit() {
   if (!projectNumber) return alert("Project # is required.");
   if (!address) return alert("Address (Project Name) is required.");
   if (applyAll && !defaultDate) return alert("Choose a project default delivery date before applying it to all levels.");
+  const undatedLevels = (activeEditProject.levels || []).filter(level => !level.estimatedDeliveryDate);
+  if (projectType === "multi" && undatedLevels.length && !(applyAll && defaultDate)) {
+    return alert(`Multi-family packages need estimated delivery dates. ${undatedLevels.length} package${undatedLevels.length === 1 ? " is" : "s are"} currently undated. Choose a default date and Apply to all levels, or set the package dates before changing the project type.`);
+  }
 
   const duplicate = state.projects.find(item => item.id !== projectId && item.projectNumber.toLowerCase() === projectNumber.toLowerCase());
   if (duplicate) return alert(`Project # ${projectNumber} already exists.`);
@@ -1151,6 +1371,7 @@ async function saveProjectEdit() {
     ["Revision", activeEditProject.revision || "", revision],
     ["Customer", activeEditProject.customer || "", customer],
     ["Sales", activeEditProject.sales || "", sales],
+    ["Project Type", activeEditProject.projectType === "sfd" ? "SFD" : "Multi-family", projectType === "sfd" ? "SFD" : "Multi-family"],
     ["Address (Project Name)", activeEditProject.address || "", address],
     ["Project default delivery date", activeEditProject.defaultEstimatedDeliveryDate || "", defaultDate]
   ];
@@ -1167,6 +1388,7 @@ async function saveProjectEdit() {
       revision: revision || null,
       customer: customer || null,
       sales: sales || null,
+      project_type: projectType,
       address_project_name: address,
       default_delivery_date: defaultDate || null,
       updated_at: new Date().toISOString(),
@@ -1298,8 +1520,116 @@ function renderMatrix() {
   requestAnimationFrame(updateMatrixTopScrollbar);
 }
 
-function renderForecast() {
-  const datedLevels = allLevels().filter(({ level }) => level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
+function startOfWeekIso(date = todayIso()) {
+  const [y, m, d] = String(date).split("-").map(Number);
+  const value = new Date(Date.UTC(y, m - 1, d));
+  const day = value.getUTCDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  value.setUTCDate(value.getUTCDate() + offset);
+  return value.toISOString().slice(0, 10);
+}
+
+function weekIndexForDate(date, firstWeekStart) {
+  if (!date || !firstWeekStart) return -1;
+  const a = Date.parse(`${firstWeekStart}T00:00:00Z`);
+  const b = Date.parse(`${date}T00:00:00Z`);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return -1;
+  return Math.floor((b - a) / (7 * 86400000));
+}
+
+function weekLabel(weekStart) {
+  const weekEnd = addDaysIso(weekStart, 6);
+  const [sy, sm, sd] = weekStart.split("-").map(Number);
+  const [ey, em, ed] = weekEnd.split("-").map(Number);
+  const startText = new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric" }).format(new Date(Date.UTC(sy, sm - 1, sd)));
+  const endText = new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric" }).format(new Date(Date.UTC(ey, em - 1, ed)));
+  return `${startText}–${endText}`;
+}
+
+function sixWeekStarts() {
+  const first = startOfWeekIso();
+  return Array.from({ length: 6 }, (_, index) => addDaysIso(first, index * 7));
+}
+
+function sixWeekMultiLevels() {
+  const weeks = sixWeekStarts();
+  const first = weeks[0];
+  const last = addDaysIso(weeks[5], 6);
+  return allLevels()
+    .filter(({ project, level }) => project.projectType !== "sfd" && levelStats(level).outstanding > EPSILON && level.estimatedDeliveryDate)
+    // Keep overdue packages visible until their date is corrected or material is delivered.
+    .filter(({ level }) => level.estimatedDeliveryDate <= last)
+    .sort((a, b) => a.level.estimatedDeliveryDate.localeCompare(b.level.estimatedDeliveryDate) || a.project.projectNumber.localeCompare(b.project.projectNumber));
+}
+
+function renderWeeklySchedule() {
+  const wrap = $("weeklyScheduleWrap");
+  const empty = $("weeklyScheduleEmpty");
+  if (!wrap || !empty) return;
+  const refs = sixWeekMultiLevels();
+  if (!refs.length) {
+    empty.classList.remove("hidden");
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+  const firstWeek = sixWeekStarts()[0];
+  const rows = refs.map(({ project, level }) => {
+    const stats = levelStats(level);
+    const plan = planningStatus(level);
+    const weekIndex = weekIndexForDate(level.estimatedDeliveryDate, firstWeek);
+    const overdue = weekIndex < 0;
+    const weekStart = addDaysIso(firstWeek, Math.max(0, weekIndex) * 7);
+    return `<tr class="${overdue ? "schedule-overdue" : ""}">
+      <td>${overdue ? "OVERDUE" : escapeHtml(`Week ${weekIndex + 1}`)}</td>
+      <td>${overdue ? "Before current week" : escapeHtml(weekLabel(weekStart))}</td>
+      <td>${escapeHtml(formatDate(level.estimatedDeliveryDate))}</td>
+      <td class="weekly-project-cell"><strong>${escapeHtml(project.projectNumber || "—")}</strong><span>${escapeHtml(project.address || "")}</span></td>
+      <td>${escapeHtml(level.name)}</td>
+      <td><span class="status-badge workflow-${plan}">${planningStatusLabel(plan)}</span></td>
+      <td>${formatNumber(stats.outstanding)}</td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table class="weekly-schedule-table"><thead><tr><th>Week</th><th>Week Range</th><th>Estimated Date</th><th>Project</th><th>Level</th><th>Status</th><th>Outstanding LF</th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.classList.remove("hidden");
+  empty.classList.add("hidden");
+}
+
+function renderWeeklyMaterialForecast() {
+  const wrap = $("weeklyMaterialWrap");
+  const empty = $("weeklyMaterialEmpty");
+  if (!wrap || !empty) return;
+  const weeks = sixWeekStarts();
+  const refs = sixWeekMultiLevels();
+  const materials = uniqueMaterials(refs);
+  if (!refs.length || !materials.length) {
+    empty.classList.remove("hidden");
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+  const firstWeek = weeks[0];
+  const rows = materials.map(materialName => {
+    const key = normalizeMaterialKey(materialName);
+    const cells = weeks.map((weekStart, weekIndex) => {
+      let total = 0;
+      for (const { level } of refs) {
+        if (weekIndexForDate(level.estimatedDeliveryDate, firstWeek) !== weekIndex) continue;
+        for (const material of level.materials || []) {
+          if (normalizeMaterialKey(material.material) === key) total += outstandingFor(level, material);
+        }
+      }
+      return `<td class="${total > EPSILON ? "month-total" : "cell-zero"}">${total > EPSILON ? formatNumber(total) : "—"}</td>`;
+    }).join("");
+    return `<tr><td class="material-col">${escapeHtml(materialName)}</td>${cells}</tr>`;
+  }).join("");
+  wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Outstanding LF</th>${weeks.map((week, index) => `<th>W${index + 1}<span class="table-head-sub">${escapeHtml(weekLabel(week))}</span></th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.classList.remove("hidden");
+  empty.classList.add("hidden");
+}
+
+function renderMonthlyForecast() {
+  const datedLevels = allLevels().filter(({ project, level }) => project.projectType !== "sfd" && level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
   const months = [...new Set(datedLevels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(datedLevels);
   const wrap = $("forecastWrap");
@@ -1318,8 +1648,9 @@ function renderForecast() {
       let total = 0;
       for (const { level } of datedLevels) {
         if (monthKey(level.estimatedDeliveryDate) !== month) continue;
-        const material = level.materials.find(item => normalizeMaterialKey(item.material) === key);
-        if (material) total += outstandingFor(level, material);
+        for (const material of level.materials || []) {
+          if (normalizeMaterialKey(material.material) === key) total += outstandingFor(level, material);
+        }
       }
       return `<td class="${total > 0 ? "month-total" : "cell-zero"}">${total > 0 ? formatNumber(total) : "—"}</td>`;
     }).join("");
@@ -1327,6 +1658,164 @@ function renderForecast() {
   }).join("");
 
   wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Outstanding LF</th>${months.map(month => `<th>${escapeHtml(monthLabel(month))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.classList.remove("hidden");
+  empty.classList.add("hidden");
+}
+
+function renderForecast() {
+  renderWeeklySchedule();
+  renderWeeklyMaterialForecast();
+  renderMonthlyForecast();
+}
+
+function incomingRemaining(order) {
+  return Math.max(0, Number(order.quantityLf || 0) - Number(order.receivedLf || 0));
+}
+
+function allKnownMaterialNames() {
+  const map = new Map();
+  for (const name of uniqueMaterials()) {
+    const key = normalizeMaterialKey(name);
+    if (key) map.set(key, name);
+  }
+  for (const item of state.inventoryMaterials || []) {
+    const key = normalizeMaterialKey(item.material);
+    if (key && !map.has(key)) map.set(key, item.material);
+  }
+  for (const order of state.incomingOrders || []) {
+    const key = normalizeMaterialKey(order.material);
+    if (key && !map.has(key)) map.set(key, order.material);
+  }
+  return [...map.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+function inventoryProfileFor(materialName) {
+  const key = normalizeMaterialKey(materialName);
+  return (state.inventoryMaterials || []).find(item => normalizeMaterialKey(item.material) === key) || null;
+}
+
+function incomingForMaterial(materialName) {
+  const key = normalizeMaterialKey(materialName);
+  return (state.incomingOrders || []).filter(order => normalizeMaterialKey(order.material) === key && incomingRemaining(order) > EPSILON);
+}
+
+function demandBreakdownFor(materialName, leadTimeWeeks = 6) {
+  const key = normalizeMaterialKey(materialName);
+  const cutoff = addDaysIso(todayIso(), Math.max(0, Number(leadTimeWeeks || 0)) * 7);
+  let committed = 0;
+  let multiForecast = 0;
+  let multiDueInLeadTime = 0;
+  let sfdBuffer = 0;
+
+  for (const { project, level } of allLevels()) {
+    for (const material of level.materials || []) {
+      if (normalizeMaterialKey(material.material) !== key) continue;
+      const outstanding = outstandingFor(level, material);
+      if (outstanding <= EPSILON) continue;
+      if (level.workflowStatus === "spruce") {
+        committed += outstanding;
+      } else if (project.projectType === "sfd") {
+        sfdBuffer += outstanding;
+      } else {
+        multiForecast += outstanding;
+        if (level.estimatedDeliveryDate && level.estimatedDeliveryDate <= cutoff) multiDueInLeadTime += outstanding;
+      }
+    }
+  }
+  return { cutoff, committed, multiForecast, multiDueInLeadTime, sfdBuffer };
+}
+
+function inventoryCalculation(materialName) {
+  const profile = inventoryProfileFor(materialName);
+  const onHand = Number(profile?.onHandLf || 0);
+  const leadTimeWeeks = Number(profile?.leadTimeWeeks ?? 6);
+  const demand = demandBreakdownFor(materialName, leadTimeWeeks);
+  const orders = incomingForMaterial(materialName);
+  const incomingOpen = orders.reduce((sum, order) => sum + incomingRemaining(order), 0);
+  const incomingDue = orders.reduce((sum, order) => sum + ((order.expectedDate && order.expectedDate <= demand.cutoff) ? incomingRemaining(order) : 0), 0);
+  const needInLeadTime = demand.committed + demand.sfdBuffer + demand.multiDueInLeadTime;
+  const stockOwed = Math.max(0, needInLeadTime - onHand - incomingDue);
+  const availableNow = onHand - demand.committed;
+  const projectedBalance = onHand + incomingOpen - demand.committed - demand.multiForecast - demand.sfdBuffer;
+  return { profile, onHand, leadTimeWeeks, ...demand, incomingOpen, incomingDue, needInLeadTime, stockOwed, availableNow, projectedBalance };
+}
+
+function renderInventory() {
+  const wrap = $("inventoryWrap");
+  const empty = $("inventoryEmpty");
+  const summary = $("inventorySummary");
+  const names = allKnownMaterialNames();
+  const datalist = $("inventoryMaterialOptions");
+  if (datalist) datalist.innerHTML = names.map(name => `<option value="${escapeHtml(name)}"></option>`).join("");
+
+  if (!wrap || !empty || !summary) return;
+  if (!names.length) {
+    empty.classList.remove("hidden");
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    summary.innerHTML = "";
+    renderIncomingOrders();
+    return;
+  }
+
+  const calculations = names.map(name => ({ name, ...inventoryCalculation(name) }));
+  const totalOwed = calculations.reduce((sum, row) => sum + row.stockOwed, 0);
+  const shortageCount = calculations.filter(row => row.stockOwed > EPSILON).length;
+  const totalIncoming = calculations.reduce((sum, row) => sum + row.incomingOpen, 0);
+  summary.innerHTML = `
+    <div class="summary-metric"><span>Stock Owed</span><strong>${formatNumber(totalOwed)} LF</strong></div>
+    <div class="summary-metric"><span>Materials Short</span><strong>${shortageCount}</strong></div>
+    <div class="summary-metric"><span>Open Incoming</span><strong>${formatNumber(totalIncoming)} LF</strong></div>`;
+
+  const rows = calculations.map(row => {
+    const key = normalizeMaterialKey(row.name);
+    const shortage = row.stockOwed > EPSILON;
+    const projectedClass = row.projectedBalance < -EPSILON ? "inventory-negative" : row.projectedBalance > EPSILON ? "inventory-positive" : "";
+    return `<tr class="inventory-row" data-material-key="${escapeHtml(key)}" data-material-name="${escapeHtml(row.name)}" data-inventory-id="${escapeHtml(row.profile?.id || "")}">
+      <td class="material-col">${escapeHtml(row.name)}</td>
+      <td><input class="inventory-on-hand" type="number" min="0" step="0.01" value="${row.onHand}" /></td>
+      <td><input class="inventory-lead-time" type="number" min="0" step="1" value="${row.leadTimeWeeks}" /></td>
+      <td>${formatNumber(row.committed)}</td>
+      <td>${formatNumber(row.multiForecast)}</td>
+      <td>${formatNumber(row.sfdBuffer)}</td>
+      <td>${formatNumber(row.incomingOpen)}</td>
+      <td>${formatNumber(row.incomingDue)}</td>
+      <td class="${row.availableNow < -EPSILON ? "inventory-negative" : ""}">${formatNumber(row.availableNow)}</td>
+      <td><strong>${formatNumber(row.needInLeadTime)}</strong><span class="cell-subnote">through ${escapeHtml(formatDate(row.cutoff))}</span></td>
+      <td class="${shortage ? "stock-owed" : "cell-zero"}">${shortage ? `<strong>${formatNumber(row.stockOwed)}</strong><span class="cell-subnote">ORDER</span>` : "—"}</td>
+      <td class="${projectedClass}">${formatNumber(row.projectedBalance)}</td>
+      <td><button type="button" class="mini-button save-inventory-row">Save</button></td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table class="inventory-table"><thead><tr><th class="material-col">Material</th><th>On Hand LF</th><th>Lead Time (wk)</th><th>Committed / Spruce</th><th>Multi Forecast</th><th>SFD Buffer</th><th>Open Incoming</th><th>Incoming by Lead Time</th><th>Available Now</th><th>Need in Lead Time</th><th>Stock Owed</th><th>Projected Balance</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.classList.remove("hidden");
+  empty.classList.add("hidden");
+  renderIncomingOrders();
+}
+
+function renderIncomingOrders() {
+  const wrap = $("incomingOrdersWrap");
+  const empty = $("incomingOrdersEmpty");
+  if (!wrap || !empty) return;
+  const orders = (state.incomingOrders || []).filter(order => incomingRemaining(order) > EPSILON).sort((a, b) => (a.expectedDate || "9999-12-31").localeCompare(b.expectedDate || "9999-12-31"));
+  if (!orders.length) {
+    empty.classList.remove("hidden");
+    wrap.classList.add("hidden");
+    wrap.innerHTML = "";
+    return;
+  }
+  const rows = orders.map(order => `<tr data-order-id="${escapeHtml(order.id)}">
+    <td class="incoming-material-cell">${escapeHtml(order.material)}</td>
+    <td>${formatNumber(order.quantityLf)}</td>
+    <td>${formatNumber(order.receivedLf)}</td>
+    <td><strong>${formatNumber(incomingRemaining(order))}</strong></td>
+    <td>${escapeHtml(order.expectedDate ? formatDate(order.expectedDate) : "No date")}</td>
+    <td>${escapeHtml(order.reference || "—")}</td>
+    <td class="incoming-note-cell">${escapeHtml(order.note || "—")}</td>
+    <td><button type="button" class="mini-button receive-incoming">Receive Remaining</button></td>
+    <td><button type="button" class="mini-button delete-incoming danger-text">Delete</button></td>
+  </tr>`).join("");
+  wrap.innerHTML = `<table class="incoming-table"><thead><tr><th>Material</th><th>Ordered LF</th><th>Received LF</th><th>Open LF</th><th>Expected</th><th>PO / Ref</th><th>Note</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.classList.remove("hidden");
   empty.classList.add("hidden");
 }
@@ -1343,16 +1832,23 @@ function formatDateTime(value) {
 const ACTIVITY_LABELS = {
   create_project: "Project added",
   replace_project: "Project replaced",
+  apply_revision: "Revision applied",
   import_project: "Project imported",
   update_project: "Project edited",
-  update_forecast_date: "Delivery date changed",
+  update_forecast_date: "Estimated delivery date changed",
+  update_level_planning: "Level planning updated",
   record_delivery: "Delivery recorded",
   undo_delivery: "Delivery undone",
   exclude_material_forecast: "Material excluded",
   adjust_material_forecast: "Material exclusion adjusted",
   restore_material_forecast: "Material restored to forecast",
   remove_level: "Level removed",
-  delete_project: "Project deleted"
+  delete_project: "Project deleted",
+  create_inventory: "Inventory material added",
+  update_inventory: "Inventory updated",
+  add_incoming: "Incoming material added",
+  receive_incoming: "Incoming material received",
+  delete_incoming: "Incoming material deleted"
 };
 
 function actionLabel(action) {
@@ -1396,6 +1892,25 @@ function activityDetailText(row) {
     return [d.material_name || "Material", amount, d.reason ? `Reason: ${d.reason}` : "", d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
   }
   if (row.action === "update_forecast_date") return `${formatDate(d.from)} → ${formatDate(d.to)}`;
+  if (row.action === "update_level_planning") return [
+    `Date: ${d.from_date ? formatDate(d.from_date) : "No date"} → ${d.to_date ? formatDate(d.to_date) : "No date"}`,
+    `Status: ${planningStatusLabel(d.from_status || "forecast")} → ${planningStatusLabel(d.to_status || "forecast")}`
+  ].join(" · ");
+  if (row.action === "apply_revision") return [
+    `Revision ${d.from_revision || "—"} → ${d.to_revision || "—"}`,
+    `${Number(d.materials_updated || 0)} material${Number(d.materials_updated || 0) === 1 ? "" : "s"} updated`,
+    Number(d.materials_added || 0) ? `${d.materials_added} added` : "",
+    Number(d.materials_archived || 0) ? `${d.materials_archived} archived` : "",
+    Number(d.levels_archived || 0) ? `${d.levels_archived} level${Number(d.levels_archived) === 1 ? "" : "s"} archived` : ""
+  ].filter(Boolean).join(" · ");
+  if (["create_inventory", "update_inventory"].includes(row.action)) return [
+    d.material_name || "Material",
+    d.to_on_hand_lf !== undefined ? `On Hand ${formatNumber(d.from_on_hand_lf || 0)} → ${formatNumber(d.to_on_hand_lf || 0)} LF` : `On Hand ${formatNumber(d.on_hand_lf || 0)} LF`,
+    d.to_lead_time_weeks !== undefined ? `Lead time ${d.from_lead_time_weeks ?? 6} → ${d.to_lead_time_weeks} weeks` : `Lead time ${d.lead_time_weeks ?? 6} weeks`
+  ].filter(Boolean).join(" · ");
+  if (row.action === "add_incoming") return [d.material_name, `${formatNumber(d.quantity_lf)} LF`, d.expected_date ? `Expected ${formatDate(d.expected_date)}` : "", d.reference ? `Ref: ${d.reference}` : ""].filter(Boolean).join(" · ");
+  if (row.action === "receive_incoming") return [d.material_name, `${formatNumber(d.received_lf)} LF received`, d.reference ? `Ref: ${d.reference}` : ""].filter(Boolean).join(" · ");
+  if (row.action === "delete_incoming") return [d.material_name, `${formatNumber(d.open_lf)} LF open removed`, d.reference ? `Ref: ${d.reference}` : ""].filter(Boolean).join(" · ");
   if (row.action === "remove_level") return d.level_name ? `Removed ${d.level_name}` : "Level removed";
   if (row.action === "delete_project") {
     const reason = d.reason ? `Reason: ${d.reason}` : "";
@@ -1544,6 +2059,7 @@ async function startLiveSync() {
 function renderAll() {
   renderMatrix();
   renderForecast();
+  renderInventory();
   if (document.getElementById("history")?.classList.contains("active") && historyLoaded) renderHistory();
 }
 
@@ -1553,8 +2069,9 @@ function openDelivery(projectId, levelId) {
   if (!project || !level) return;
   activeDelivery = { project, level };
   $("deliveryTitle").textContent = `${projectTitle(project)} — ${level.name}`;
-  $("deliverySubtitle").textContent = `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Forecast date ${formatDate(level.estimatedDeliveryDate)}`;
+  $("deliverySubtitle").textContent = `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Estimated delivery ${formatDate(level.estimatedDeliveryDate)}`;
   $("forecastDateEdit").value = level.estimatedDeliveryDate || "";
+  $("workflowStatusEdit").value = level.workflowStatus === "spruce" ? "spruce" : "forecast";
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
   $("deliveryMaterialSearch").value = "";
@@ -1575,7 +2092,7 @@ function applyDeliveryMaterialFilter() {
 function renderDeliveryItems() {
   if (!activeDelivery) return;
   const { level } = activeDelivery;
-  const rows = level.materials.map((material, index) => {
+  const rows = level.materials.map(material => {
     const remaining = outstandingFor(level, material);
     const delivered = deliveredFor(level, material);
     const excluded = excludedFor(material);
@@ -1587,7 +2104,7 @@ function renderDeliveryItems() {
       <td>${formatNumber(delivered)}</td>
       <td class="material-excluded-cell">${excluded > EPSILON ? formatNumber(excluded) : "0"}</td>
       <td><strong>${formatNumber(remaining)}</strong></td>
-      <td><input class="delivery-input" data-material-index="${index}" type="number" min="0" max="${remaining}" step="0.01" value="0" ${remaining <= EPSILON ? "disabled" : ""} /></td>
+      <td><input class="delivery-input" data-material-id="${escapeHtml(material.id)}" type="number" min="0" max="${remaining}" step="0.01" value="0" ${remaining <= EPSILON ? "disabled" : ""} /></td>
       <td class="forecast-action-cell"><button type="button" class="mini-button exclude-material" data-material-id="${escapeHtml(material.id)}" ${maxExcludable <= EPSILON && excluded <= EPSILON ? "disabled" : ""}>${actionLabel}</button></td>
     </tr>`;
   }).join("");
@@ -1708,7 +2225,7 @@ async function refreshActiveDelivery() {
 async function saveDelivery() {
   if (!activeDelivery) return;
   const date = $("deliveryDate").value;
-  if (!date) return alert("Choose a delivery date.");
+  if (!date) return alert("Choose an actual delivery date.");
 
   // Re-read shared data immediately before validating the quantities. This reduces stale-entry conflicts.
   await refreshActiveDelivery();
@@ -1716,8 +2233,8 @@ async function saveDelivery() {
 
   const items = [];
   document.querySelectorAll(".delivery-input").forEach(input => {
-    const index = Number(input.dataset.materialIndex);
-    const material = activeDelivery.level.materials[index];
+    const material = activeDelivery.level.materials.find(item => item.id === input.dataset.materialId);
+    if (!material) return;
     const max = outstandingFor(activeDelivery.level, material);
     const requested = Number(input.value || 0);
     if (requested < -EPSILON || requested > max + EPSILON) throw new Error(`Delivery for ${material.material} must be between 0 and ${formatNumber(max)} LF. Another user may have recorded a delivery; review the refreshed remaining quantity.`);
@@ -1746,7 +2263,7 @@ async function saveDelivery() {
   if (activeDelivery) {
     renderDeliveryItems();
     renderDeliveryHistory();
-    $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Forecast date ${formatDate(activeDelivery.level.estimatedDeliveryDate)}`;
+    $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Estimated delivery ${formatDate(activeDelivery.level.estimatedDeliveryDate)}`;
   }
 }
 
@@ -1768,6 +2285,159 @@ async function deleteDelivery(deliveryId) {
     renderDeliveryItems();
     renderDeliveryHistory();
   }
+}
+
+async function saveInventoryRow(row) {
+  if (!row) return;
+  const materialName = normalizeSpaces(row.dataset.materialName || "");
+  const onHand = Number(row.querySelector(".inventory-on-hand")?.value || 0);
+  const leadTimeWeeks = Number(row.querySelector(".inventory-lead-time")?.value || 0);
+  if (!materialName) return alert("Material name is required.");
+  if (!Number.isFinite(onHand) || onHand < 0) return alert("On Hand must be zero or greater.");
+  if (!Number.isFinite(leadTimeWeeks) || leadTimeWeeks < 0) return alert("Lead Time must be zero or greater.");
+
+  await syncFromCloud({ silent: true });
+  const existing = inventoryProfileFor(materialName);
+  const now = new Date().toISOString();
+  if (existing) {
+    const updated = await updateRows("inventory_materials", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, {
+      material_name: materialName,
+      on_hand_lf: onHand,
+      lead_time_weeks: leadTimeWeeks,
+      updated_at: now,
+      version: existing.version + 1
+    });
+    if (!updated?.length) throw new Error("This inventory row was changed by another user. Refresh and try again.");
+    await recordActivity("inventory", existing.id, "update_inventory", {
+      material_name: materialName,
+      from_on_hand_lf: existing.onHandLf,
+      to_on_hand_lf: onHand,
+      from_lead_time_weeks: existing.leadTimeWeeks,
+      to_lead_time_weeks: leadTimeWeeks
+    });
+  } else {
+    const id = uid();
+    await insertRows("inventory_materials", {
+      id,
+      material_name: materialName,
+      on_hand_lf: onHand,
+      lead_time_weeks: leadTimeWeeks,
+      version: 1
+    });
+    await recordActivity("inventory", id, "create_inventory", { material_name: materialName, on_hand_lf: onHand, lead_time_weeks: leadTimeWeeks });
+  }
+  await syncFromCloud({ silent: true });
+}
+
+async function addTrackedInventoryMaterial() {
+  const materialName = normalizeSpaces($("inventoryNewMaterial")?.value || "");
+  if (!materialName) return alert("Enter a material to track.");
+  await syncFromCloud({ silent: true });
+  if (inventoryProfileFor(materialName)) return alert(`${materialName} is already tracked.`);
+  const id = uid();
+  await insertRows("inventory_materials", {
+    id,
+    material_name: materialName,
+    on_hand_lf: 0,
+    lead_time_weeks: 6,
+    version: 1
+  });
+  await recordActivity("inventory", id, "create_inventory", { material_name: materialName, on_hand_lf: 0, lead_time_weeks: 6 });
+  $("inventoryNewMaterial").value = "";
+  await syncFromCloud({ silent: true });
+}
+
+async function addIncomingOrder() {
+  const materialName = normalizeSpaces($("incomingMaterial")?.value || "");
+  const quantityLf = Number($("incomingLf")?.value || 0);
+  const expectedDate = $("incomingDate")?.value || "";
+  const reference = normalizeSpaces($("incomingReference")?.value || "");
+  const note = normalizeSpaces($("incomingNote")?.value || "");
+  if (!materialName) return alert("Enter a material.");
+  if (!Number.isFinite(quantityLf) || quantityLf <= EPSILON) return alert("Enter an incoming quantity greater than 0 LF.");
+  if (!expectedDate) return alert("Choose an expected date for the incoming material.");
+
+  const id = uid();
+  await insertRows("incoming_orders", {
+    id,
+    material_name: materialName,
+    quantity_lf: quantityLf,
+    received_lf: 0,
+    expected_date: expectedDate,
+    reference: reference || null,
+    note: note || null,
+    version: 1
+  });
+  await recordActivity("incoming", id, "add_incoming", { material_name: materialName, quantity_lf: quantityLf, expected_date: expectedDate, reference, note });
+  $("incomingMaterial").value = "";
+  $("incomingLf").value = "";
+  $("incomingDate").value = "";
+  $("incomingReference").value = "";
+  $("incomingNote").value = "";
+  await syncFromCloud({ silent: true });
+}
+
+async function receiveIncomingOrder(orderId) {
+  await syncFromCloud({ silent: true });
+  const order = (state.incomingOrders || []).find(item => item.id === orderId);
+  if (!order) return alert("This incoming order no longer exists.");
+  const remaining = incomingRemaining(order);
+  if (remaining <= EPSILON) return;
+  if (!confirm(`Receive ${formatNumber(remaining)} LF of ${order.material}?\n\nThe remaining quantity will be added to On Hand.`)) return;
+
+  const claimed = await updateRows("incoming_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` }, {
+    received_lf: Number(order.quantityLf || 0),
+    updated_at: new Date().toISOString(),
+    version: order.version + 1
+  });
+  if (!claimed?.length) throw new Error("This incoming order was changed by another user. Refresh and try again.");
+
+  let createdInventoryId = "";
+  try {
+    const profile = inventoryProfileFor(order.material);
+    if (profile) {
+      const updated = await updateRows("inventory_materials", { id: `eq.${profile.id}`, version: `eq.${profile.version}` }, {
+        on_hand_lf: Number(profile.onHandLf || 0) + remaining,
+        updated_at: new Date().toISOString(),
+        version: profile.version + 1
+      });
+      if (!updated?.length) throw new Error("The inventory row changed while this receipt was being posted.");
+    } else {
+      createdInventoryId = uid();
+      await insertRows("inventory_materials", {
+        id: createdInventoryId,
+        material_name: order.material,
+        on_hand_lf: remaining,
+        lead_time_weeks: 6,
+        version: 1
+      });
+    }
+  } catch (error) {
+    try {
+      await updateRows("incoming_orders", { id: `eq.${order.id}`, version: `eq.${order.version + 1}` }, {
+        received_lf: order.receivedLf,
+        updated_at: new Date().toISOString(),
+        version: order.version + 2
+      });
+      if (createdInventoryId) await deleteRows("inventory_materials", { id: `eq.${createdInventoryId}` });
+    } catch (rollbackError) {
+      console.error("Incoming receipt rollback failed", rollbackError);
+    }
+    throw error;
+  }
+
+  await recordActivity("incoming", order.id, "receive_incoming", { material_name: order.material, received_lf: remaining, reference: order.reference || "" });
+  await syncFromCloud({ silent: true });
+}
+
+async function deleteIncomingOrder(orderId) {
+  const order = (state.incomingOrders || []).find(item => item.id === orderId);
+  if (!order) return;
+  if (!confirm(`Delete the open incoming record for ${order.material}?`)) return;
+  const deleted = await deleteRows("incoming_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` });
+  if (!deleted?.length) throw new Error("This incoming order was changed by another user. Refresh and try again.");
+  await recordActivity("incoming", order.id, "delete_incoming", { material_name: order.material, open_lf: incomingRemaining(order), reference: order.reference || "" });
+  await syncFromCloud({ silent: true });
 }
 
 function downloadText(filename, text, mime = "text/plain;charset=utf-8") {
@@ -1801,7 +2471,7 @@ function exportMatrixCsv() {
 }
 
 function exportForecastCsv() {
-  const levels = allLevels().filter(({ level }) => level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
+  const levels = allLevels().filter(({ project, level }) => project.projectType !== "sfd" && level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
   const months = [...new Set(levels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(levels);
   const rows = [["Material", ...months.map(monthLabel)]];
@@ -1820,6 +2490,15 @@ function exportForecastCsv() {
   downloadText("ewp-monthly-forecast.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
+function exportInventoryCsv() {
+  const rows = [["Material", "On Hand LF", "Lead Time Weeks", "Committed / Spruce LF", "Multi Forecast LF", "SFD Buffer LF", "Open Incoming LF", "Incoming by Lead Time LF", "Available Now LF", "Need In Lead Time LF", "Stock Owed LF", "Projected Balance LF"]];
+  for (const materialName of allKnownMaterialNames()) {
+    const c = inventoryCalculation(materialName);
+    rows.push([materialName, c.onHand, c.leadTimeWeeks, c.committed, c.multiForecast, c.sfdBuffer, c.incomingOpen, c.incomingDue, c.availableNow, c.needInLeadTime, c.stockOwed, c.projectedBalance]);
+  }
+  downloadText("ewp-inventory-purchasing.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
+}
+
 function cleanBackupState() {
   return {
     version: SCHEMA_VERSION,
@@ -1831,17 +2510,39 @@ function cleanBackupState() {
       customer: project.customer,
       sales: project.sales,
       address: project.address,
+      projectType: project.projectType === "sfd" ? "sfd" : "multi",
       defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate,
       levels: (project.levels || []).map(level => ({
         name: level.name,
         estimatedDeliveryDate: level.estimatedDeliveryDate,
-        materials: (level.materials || []).map(material => ({ material: material.material, requiredLf: material.requiredLf })),
+        workflowStatus: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+        materials: (level.materials || []).map(material => ({
+          material: material.material,
+          requiredLf: material.requiredLf,
+          excludedLf: material.excludedLf || 0,
+          exclusionReason: material.exclusionReason || "",
+          exclusionNote: material.exclusionNote || ""
+        })),
         deliveries: (level.deliveries || []).map(delivery => ({
           date: delivery.date,
           note: delivery.note,
           items: (delivery.items || []).map(item => ({ material: item.material, lf: item.lf }))
         }))
       }))
+    })),
+    inventoryMaterials: (state.inventoryMaterials || []).map(item => ({
+      material: item.material,
+      onHandLf: item.onHandLf,
+      leadTimeWeeks: item.leadTimeWeeks,
+      note: item.note || ""
+    })),
+    incomingOrders: (state.incomingOrders || []).map(order => ({
+      material: order.material,
+      quantityLf: order.quantityLf,
+      receivedLf: order.receivedLf,
+      expectedDate: order.expectedDate,
+      reference: order.reference || "",
+      note: order.note || ""
     }))
   };
 }
@@ -1857,12 +2558,21 @@ function normalizeBackup(parsed) {
       customer: normalizeSpaces(project.customer || ""),
       sales: normalizeSpaces(project.sales || ""),
       address: normalizeSpaces(project.address || ""),
+      projectType: project.projectType === "sfd" ? "sfd" : "multi",
       defaultEstimatedDeliveryDate: project.defaultEstimatedDeliveryDate || "",
       levels: (project.levels || []).map((level, index) => ({
         id: uid(),
         name: normalizeSpaces(level.name || `Level ${index + 1}`),
         estimatedDeliveryDate: level.estimatedDeliveryDate || "",
-        materials: (level.materials || []).map(material => ({ id: uid(), material: normalizeSpaces(material.material || ""), requiredLf: Number(material.requiredLf || 0) })),
+        workflowStatus: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+        materials: (level.materials || []).map(material => ({
+          id: uid(),
+          material: normalizeSpaces(material.material || ""),
+          requiredLf: Number(material.requiredLf || 0),
+          excludedLf: Number(material.excludedLf || 0),
+          exclusionReason: normalizeSpaces(material.exclusionReason || ""),
+          exclusionNote: normalizeSpaces(material.exclusionNote || "")
+        })),
         deliveries: (level.deliveries || []).map(delivery => ({
           id: uid(),
           date: delivery.date || "",
@@ -1870,22 +2580,42 @@ function normalizeBackup(parsed) {
           items: (delivery.items || []).map(item => ({ material: normalizeSpaces(item.material || ""), lf: Number(item.lf || 0) }))
         }))
       }))
-    }))
+    })),
+    inventoryMaterials: Array.isArray(parsed.inventoryMaterials) ? parsed.inventoryMaterials.map(item => ({
+      material: normalizeSpaces(item.material || ""),
+      onHandLf: Math.max(0, Number(item.onHandLf || 0)),
+      leadTimeWeeks: Math.max(0, Math.round(Number(item.leadTimeWeeks ?? 6))),
+      note: normalizeSpaces(item.note || "")
+    })).filter(item => item.material) : [],
+    incomingOrders: Array.isArray(parsed.incomingOrders) ? parsed.incomingOrders.map(order => ({
+      material: normalizeSpaces(order.material || ""),
+      quantityLf: Math.max(0, Number(order.quantityLf || 0)),
+      receivedLf: Math.max(0, Number(order.receivedLf || 0)),
+      expectedDate: order.expectedDate || "",
+      reference: normalizeSpaces(order.reference || ""),
+      note: normalizeSpaces(order.note || "")
+    })).filter(order => order.material && order.quantityLf > EPSILON) : []
   };
 }
 
 async function importProjectsToCloud(importState, label) {
   const validProjects = (importState.projects || []).filter(project => project.projectNumber && project.address && (project.levels || []).length);
   if (!validProjects.length) throw new Error("No valid projects were found in this import.");
-  if (!confirm(`${label} contains ${validProjects.length} project${validProjects.length === 1 ? "" : "s"}.\n\nMatching Project # records in shared data will be replaced. Continue?`)) return;
+  if (!confirm(`${label} contains ${validProjects.length} project${validProjects.length === 1 ? "" : "s"}.\n\nMatching Project # records will be reconciled in place so existing delivery history is preserved. Continue?`)) return;
 
   await syncFromCloud({ silent: true });
   for (const project of validProjects) {
     const existing = state.projects.find(item => item.projectNumber.toLowerCase() === project.projectNumber.toLowerCase());
-    const newId = await createProjectGraph(project);
-    if (existing) await deleteRows("projects", { id: `eq.${existing.id}` });
-    setProjectCollapsed(newId, (project.levels || []).length > 1);
-    await recordActivity("project", newId, "import_project", { source: label, project_number: project.projectNumber });
+    let projectId;
+    if (existing) {
+      const summary = await reconcileProjectRevision(existing, project);
+      projectId = existing.id;
+      await recordActivity("project", projectId, "apply_revision", { source: label, project_number: project.projectNumber, ...summary });
+    } else {
+      projectId = await createProjectGraph(project);
+      await recordActivity("project", projectId, "import_project", { source: label, project_number: project.projectNumber });
+    }
+    setProjectCollapsed(projectId, (project.levels || []).length > 1);
     await syncFromCloud({ silent: true });
   }
   await syncFromCloud({ silent: true });
@@ -1959,16 +2689,23 @@ async function deleteActiveProject() {
 async function updateForecastDate() {
   if (!activeDelivery) return;
   const nextDate = $("forecastDateEdit").value;
-  if (!nextDate) return alert("Choose a forecast date.");
+  const nextStatus = $("workflowStatusEdit").value === "spruce" ? "spruce" : "forecast";
   const { project, level } = activeDelivery;
+  if (project.projectType !== "sfd" && !nextDate) return alert("Choose an estimated delivery date for a Multi-family package.");
   try {
     const result = await updateRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` }, {
-      estimated_delivery_date: nextDate,
+      estimated_delivery_date: nextDate || null,
+      workflow_status: nextStatus,
       updated_at: new Date().toISOString(),
       version: level.version + 1
     });
     if (!result?.length) throw new Error("This level was changed by another user. The shared data will be refreshed before you try again.");
-    await recordActivity("level", level.id, "update_forecast_date", { from: level.estimatedDeliveryDate, to: nextDate });
+    await recordActivity("level", level.id, "update_level_planning", {
+      from_date: level.estimatedDeliveryDate || "",
+      to_date: nextDate || "",
+      from_status: level.workflowStatus || "forecast",
+      to_status: nextStatus
+    });
     const projectId = project.id;
     const levelId = level.id;
     await syncFromCloud({ silent: true });
@@ -1976,7 +2713,8 @@ async function updateForecastDate() {
     const freshLevel = freshProject?.levels.find(item => item.id === levelId);
     activeDelivery = freshProject && freshLevel ? { project: freshProject, level: freshLevel } : null;
     if (activeDelivery) {
-      $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Forecast date ${formatDate(nextDate)}`;
+      $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Estimated delivery ${formatDate(nextDate)} · ${planningStatusLabel(planningStatus(activeDelivery.level))}`;
+      $("workflowStatusEdit").value = activeDelivery.level.workflowStatus === "spruce" ? "spruce" : "forecast";
       renderDeliveryItems();
       renderDeliveryHistory();
     }
@@ -1986,7 +2724,6 @@ async function updateForecastDate() {
     await syncFromCloud({ silent: true });
   }
 }
-
 async function removeActiveLevel() {
   if (!activeDelivery) return;
   const { project, level } = activeDelivery;
@@ -2034,7 +2771,7 @@ function wireEvents() {
     await signOut();
     currentUserName = "";
     renderCurrentUser();
-    state = { version: SCHEMA_VERSION, projects: [] };
+    state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], incomingOrders: [] };
     renderAll();
     setCloudStatus("connecting", "Sign in required");
     const session = await openLoginDialog();
@@ -2074,6 +2811,13 @@ function wireEvents() {
   };
   $("projectDate").addEventListener("input", handleProjectDateChange);
   $("projectDate").addEventListener("change", handleProjectDateChange);
+  $("projectType").addEventListener("change", () => {
+    updateProjectTypeUi();
+    if (draft) {
+      syncDraftFromInputs();
+      renderDraftLevels();
+    }
+  });
   ["projectNumber", "revision", "customer", "sales", "address"].forEach(id => {
     $(id).addEventListener("input", () => {
       $(id).classList.remove("input-invalid");
@@ -2191,6 +2935,7 @@ function wireEvents() {
   });
   $("refreshCloud").addEventListener("click", () => syncFromCloud());
   $("refreshCloudForecast").addEventListener("click", () => syncFromCloud());
+  $("refreshCloudInventory").addEventListener("click", () => syncFromCloud());
 
   const matrixWrap = $("matrixWrap");
   const matrixTopScroll = $("matrixTopScroll");
@@ -2243,8 +2988,8 @@ function wireEvents() {
   $("fillEntireLevel").addEventListener("click", () => {
     if (!activeDelivery) return;
     document.querySelectorAll(".delivery-input").forEach(input => {
-      const material = activeDelivery.level.materials[Number(input.dataset.materialIndex)];
-      input.value = outstandingFor(activeDelivery.level, material);
+      const material = activeDelivery.level.materials.find(item => item.id === input.dataset.materialId);
+      if (material) input.value = outstandingFor(activeDelivery.level, material);
     });
   });
   $("clearDeliveryInputs").addEventListener("click", () => document.querySelectorAll(".delivery-input").forEach(input => { input.value = 0; }));
@@ -2281,6 +3026,52 @@ function wireEvents() {
   });
   $("materialExclusionDialog").addEventListener("close", () => { activeMaterialExclusion = null; });
 
+  $("inventoryWrap").addEventListener("click", async event => {
+    const button = event.target.closest(".save-inventory-row");
+    if (!button) return;
+    const row = button.closest(".inventory-row");
+    button.disabled = true;
+    button.textContent = "Saving…";
+    try { await saveInventoryRow(row); }
+    catch (error) { console.error(error); alert(error.message); await syncFromCloud({ silent: true }); }
+    finally { button.disabled = false; button.textContent = "Save"; }
+  });
+  $("addInventoryMaterial").addEventListener("click", async () => {
+    const button = $("addInventoryMaterial");
+    button.disabled = true;
+    try { await addTrackedInventoryMaterial(); }
+    catch (error) { console.error(error); alert(error.message); }
+    finally { button.disabled = false; }
+  });
+  $("addIncomingOrder").addEventListener("click", async () => {
+    const button = $("addIncomingOrder");
+    button.disabled = true;
+    button.textContent = "Adding…";
+    try { await addIncomingOrder(); }
+    catch (error) { console.error(error); alert(error.message); }
+    finally { button.disabled = false; button.textContent = "+ Add Incoming"; }
+  });
+  $("incomingOrdersWrap").addEventListener("click", async event => {
+    const row = event.target.closest("tr[data-order-id]");
+    if (!row) return;
+    const orderId = row.dataset.orderId;
+    const receive = event.target.closest(".receive-incoming");
+    const remove = event.target.closest(".delete-incoming");
+    if (!receive && !remove) return;
+    const button = receive || remove;
+    button.disabled = true;
+    try {
+      if (receive) await receiveIncomingOrder(orderId);
+      else await deleteIncomingOrder(orderId);
+    } catch (error) {
+      console.error(error);
+      alert(error.message);
+      await syncFromCloud({ silent: true });
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   $("saveProjectEdit").addEventListener("click", saveProjectEdit);
   $("openDeleteProject").addEventListener("click", openDeleteProjectDialog);
   $("confirmDeleteProject").addEventListener("click", deleteActiveProject);
@@ -2292,6 +3083,7 @@ function wireEvents() {
 
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);
+  $("exportInventoryCsv").addEventListener("click", exportInventoryCsv);
   $("refreshHistory").addEventListener("click", () => loadAndRenderHistory());
   $("loadOlderHistory").addEventListener("click", async () => {
     const button = $("loadOlderHistory");
@@ -2330,6 +3122,7 @@ function wireEvents() {
 
 async function init() {
   wireEvents();
+  updateProjectTypeUi();
   renderCurrentUser();
   setAuthGateVisible(true);
   renderAll();

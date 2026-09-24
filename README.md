@@ -1,6 +1,33 @@
-# EWP Material Forecast — V0.14
+# EWP Material Forecast — V0.16
 
 **Developed by Samuel Chung @ Griff**
+
+## V0.16 changes
+
+V0.16 expands the V0.15 project forecast into the inventory / purchasing workflow described by Matt, while preserving the PDF-first project-entry flow.
+
+- Adds **Project Type: Multi-family / SFD**. Multi-family packages require estimated delivery dates; SFD package dates are optional.
+- Adds package planning states **Forecast → In Spruce → Delivered**. `In Spruce` reserves the package's outstanding LF against current stock; `Delivered` is derived automatically once no outstanding LF remains.
+- Replaces the forecast screen with a **6-week Multi Delivery Schedule**, **6-week material demand**, and the existing longer-term **Monthly Material Forecast**.
+- Adds **Inventory & Purchasing** with current Spruce On Hand, material-specific lead time, committed/Spruce demand, Multi forecast demand, SFD buffer, incoming material, available stock, lead-time need, Stock Owed, and projected balance.
+- Adds **Incoming Material** records with expected date, PO/reference, note, remaining quantity, receive action and audit history. Receiving an order adds the remaining LF to On Hand.
+- Calculates **Stock Owed** using each material's lead-time window: committed demand + SFD buffer + Multi demand due within lead time, less On Hand and incoming material due within the same window.
+- Keeps SFD demand out of the dated Multi forecast and instead treats outstanding non-Spruce SFD quantities as a purchasing buffer.
+- Changes repeat Project # uploads into **revision reconciliation** instead of delete/recreate. Matching levels/materials are updated in place, new items are added, removed items are archived from the active forecast, and existing delivery/history records are preserved.
+- Adds Realtime sync for the new inventory and incoming-material tables and extends Entry History for planning, inventory and purchasing changes.
+
+### Required Supabase change for V0.16
+
+Run **`supabase_v0_16.sql` before deploying the V0.16 frontend**. It adds the project/package planning columns, archival flags, the `inventory_materials` and `incoming_orders` tables, authenticated-user RLS policies, and Realtime publication for the new tables. The migration is designed to preserve existing project, material and delivery data.
+
+## V0.15 changes
+
+- Clarifies the Delivery / Manage window by separating the planning date from the actual delivery transaction date.
+- Renames **Forecast / Estimated Delivery Date** to **Estimated Delivery Date** and places its update control beside it.
+- Renames **Delivery Date** to **Actual Delivery Date** and groups it with the delivery note immediately above the material delivery controls.
+- Renames **Update Forecast Date** to **Update Estimated Date** and updates related user-facing wording / Entry History labels for consistency.
+- No Supabase schema, RLS, Realtime or configuration change is required for V0.15.
+- All V0.14 functionality, including cross-page Total Lengths parsing, is preserved.
 
 
 ## V0.14 changes
@@ -100,7 +127,7 @@ V0.9 adds Supabase email/password authentication to the shared-team V0.7 applica
 
 - **GitHub Pages** hosts the web app.
 - **Supabase Auth** verifies team users.
-- **Supabase Postgres / Data API** stores shared Project / Level / Material / Delivery data.
+- **Supabase Postgres / Data API** stores shared Project / Level / Material / Delivery / Inventory / Incoming Material data.
 - EWP PDFs are parsed **locally in the user's browser**. The original PDF is not uploaded by this app.
 - Only the structured information extracted/entered by the user is sent to Supabase.
 
@@ -125,7 +152,8 @@ Do not enable RLS before the V0.9 login test unless the required policies are cr
 - Additive partial/full delivery transactions.
 - Multi-level projects collapsed by default.
 - Compact matrix cards, sticky project headers, frozen material column and top horizontal scrollbar.
-- Monthly outstanding-material forecast.
+- 6-week Multi delivery/material forecast plus longer-term monthly outstanding-material forecast.
+- Inventory / purchasing view with SFD buffer, committed Spruce demand, incoming material and Stock Owed.
 - V0.5 local-browser data migration.
 - CSV export tools.
 
@@ -148,7 +176,9 @@ Put these files directly in the repository root:
 - `auth.mjs`
 - `parser.mjs`
 - `db.mjs`
+- `realtime.mjs`
 - `config.mjs`
+- `supabase_v0_16.sql` (migration reference; run in Supabase SQL Editor before deployment)
 - `.nojekyll`
 - `.gitignore`
 - `README.md`
@@ -179,7 +209,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['projects','levels','materials','deliveries','activity_log']
+  foreach t in array array['projects','levels','materials','deliveries','inventory_materials','incoming_orders','activity_log']
   loop
     if not exists (
       select 1

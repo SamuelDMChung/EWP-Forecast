@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.14 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.16 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -28,7 +28,8 @@
   <nav class="tabs" aria-label="Main navigation">
     <button class="tab active" data-tab="intake">Add Project</button>
     <button class="tab" data-tab="matrix">Projects &amp; Materials</button>
-    <button class="tab" data-tab="forecast">Monthly Forecast</button>
+    <button class="tab" data-tab="forecast">Delivery Forecast</button>
+    <button class="tab" data-tab="inventory">Inventory &amp; Purchasing</button>
     <button class="tab" data-tab="history">Entry History</button>
   </nav>
 
@@ -61,6 +62,12 @@
             <label>Revision<input id="revision" autocomplete="off" placeholder="e.g. R1" /></label>
             <label>Customer<input id="customer" autocomplete="off" placeholder="Customer" /></label>
             <label>Sales<input id="sales" autocomplete="off" placeholder="Salesperson" /></label>
+            <label>Project Type
+              <select id="projectType">
+                <option value="multi">Multi-family</option>
+                <option value="sfd">SFD</option>
+              </select>
+            </label>
             <label class="full">Address (Project Name)<textarea id="address" rows="2" placeholder="Address / project name"></textarea></label>
             <div class="full intake-schedule-block">
               <label class="delivery-date-field">Estimated Delivery Date<input id="projectDate" type="date" /></label>
@@ -68,6 +75,7 @@
                 <label class="checkbox-row compact"><input id="applyDateAll" type="checkbox" /> Apply this delivery date to all levels</label>
                 <label class="checkbox-row compact"><input id="staggerWeekly" type="checkbox" /> Auto-set levels 1 week apart</label>
               </div>
+              <p id="projectTypeHint" class="small-note schedule-hint">Multi-family levels appear in the 6-week delivery schedule. Estimated delivery dates are required.</p>
               <div id="deliveryPreview" class="delivery-preview hidden" aria-live="polite"></div>
             </div>
           </div>
@@ -120,23 +128,104 @@
     <section id="forecast" class="tab-panel">
       <div class="toolbar">
         <div>
-          <h2>Monthly Forecast</h2>
-          <p>Only outstanding quantities are included. Shared deliveries and date changes flow into this forecast on refresh.</p>
+          <h2>Delivery Forecast</h2>
+          <p>Multi-family packages are shown in the next six weeks by estimated delivery date. The monthly table remains available for the longer-term material outlook.</p>
         </div>
         <div class="toolbar-actions">
           <button id="refreshCloudForecast" class="button secondary">Refresh</button>
-          <button id="exportForecastCsv" class="button secondary">Export CSV</button>
+          <button id="exportForecastCsv" class="button secondary">Export Monthly CSV</button>
         </div>
       </div>
-      <div id="forecastEmpty" class="empty-state">Add projects with delivery dates to see the monthly forecast.</div>
-      <div id="forecastWrap" class="table-wrap hidden"></div>
+
+      <article class="card forecast-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>6-Week Multi Delivery Schedule</h3>
+            <p class="small-note">Forecast = planned only. In Spruce = committed against inventory. Delivered levels leave the outstanding schedule automatically.</p>
+          </div>
+        </div>
+        <div id="weeklyScheduleEmpty" class="empty-state compact-empty">No outstanding Multi-family levels are overdue or due within the next six weeks.</div>
+        <div id="weeklyScheduleWrap" class="table-wrap hidden"></div>
+      </article>
+
+      <article class="card forecast-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>6-Week Material Demand</h3>
+            <p class="small-note">Outstanding Multi-family LF grouped by delivery week.</p>
+          </div>
+        </div>
+        <div id="weeklyMaterialEmpty" class="empty-state compact-empty">No material demand falls within the next six weeks.</div>
+        <div id="weeklyMaterialWrap" class="table-wrap hidden"></div>
+      </article>
+
+      <article class="card forecast-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Monthly Material Forecast</h3>
+            <p class="small-note">Outstanding dated quantities only. SFD quantities are handled separately as a purchasing buffer in Inventory &amp; Purchasing.</p>
+          </div>
+        </div>
+        <div id="forecastEmpty" class="empty-state compact-empty">Add dated projects to see the monthly forecast.</div>
+        <div id="forecastWrap" class="table-wrap hidden"></div>
+      </article>
+    </section>
+
+    <section id="inventory" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Inventory &amp; Purchasing</h2>
+          <p>Combine current Spruce stock, open incoming material, committed jobs, Multi forecasts and the SFD buffer to see what is owed.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshCloudInventory" class="button secondary">Refresh</button>
+          <button id="exportInventoryCsv" class="button secondary">Export CSV</button>
+        </div>
+      </div>
+
+      <div id="inventorySummary" class="inventory-summary"></div>
+
+      <article class="card inventory-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Stock Position</h3>
+            <p class="small-note">Stock Owed looks only through each product's lead-time window. Projected Balance looks across all outstanding demand and all open incoming material.</p>
+          </div>
+        </div>
+        <div class="inventory-add-material">
+          <input id="inventoryNewMaterial" list="inventoryMaterialOptions" placeholder="Add / track a material…" autocomplete="off" />
+          <button id="addInventoryMaterial" type="button" class="button secondary">+ Track Material</button>
+        </div>
+        <div id="inventoryEmpty" class="empty-state compact-empty">Add a project or track an inventory material to begin.</div>
+        <div id="inventoryWrap" class="table-wrap hidden"></div>
+      </article>
+
+      <article class="card inventory-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Incoming Material</h3>
+            <p class="small-note">Record mill / transfer material that is already ordered. Receiving an order adds its remaining LF to On Hand.</p>
+          </div>
+        </div>
+        <div class="incoming-form-grid">
+          <label>Material<input id="incomingMaterial" list="inventoryMaterialOptions" placeholder="Material" autocomplete="off" /></label>
+          <label>Quantity (LF)<input id="incomingLf" type="number" min="0" step="0.01" /></label>
+          <label>Expected Date<input id="incomingDate" type="date" /></label>
+          <label>PO / Reference<input id="incomingReference" placeholder="Optional" /></label>
+          <label class="incoming-note">Note<input id="incomingNote" placeholder="Optional" /></label>
+          <button id="addIncomingOrder" type="button" class="button primary incoming-add">+ Add Incoming</button>
+        </div>
+        <datalist id="inventoryMaterialOptions"></datalist>
+        <div id="incomingOrdersEmpty" class="empty-state compact-empty">No open incoming material.</div>
+        <div id="incomingOrdersWrap" class="table-wrap hidden"></div>
+      </article>
     </section>
 
     <section id="history" class="tab-panel">
       <div class="toolbar">
         <div>
           <h2>Entry History</h2>
-          <p>Review shared project changes, forecast-date edits and delivery transactions recorded by signed-in users.</p>
+          <p>Review shared project, planning, inventory, purchasing and delivery changes recorded by signed-in users.</p>
         </div>
         <div class="toolbar-actions">
           <button id="refreshHistory" class="button secondary">Refresh</button>
@@ -188,14 +277,23 @@
         <button value="cancel" class="icon-button" aria-label="Close">×</button>
       </div>
 
-      <div class="form-grid delivery-meta">
-        <label>Forecast / Estimated Delivery Date<input id="forecastDateEdit" type="date" /></label>
-        <label>Delivery Date<input id="deliveryDate" type="date" required /></label>
-        <label class="full">Delivery Note<input id="deliveryNote" placeholder="Optional — urgent truck, phase 1, etc." /></label>
+      <div class="delivery-estimate-control planning-control">
+        <label>Estimated Delivery Date<input id="forecastDateEdit" type="date" /></label>
+        <label>Planning Status
+          <select id="workflowStatusEdit">
+            <option value="forecast">Forecast</option>
+            <option value="spruce">In Spruce</option>
+          </select>
+        </label>
+        <button id="updateForecastDate" type="button" class="button secondary">Update Planning</button>
+      </div>
+
+      <div class="form-grid delivery-transaction-meta">
+        <label>Actual Delivery Date<input id="deliveryDate" type="date" required /></label>
+        <label>Delivery Note<input id="deliveryNote" placeholder="Optional — urgent truck, phase 1, etc." /></label>
       </div>
 
       <div class="delivery-actions">
-        <button id="updateForecastDate" type="button" class="button secondary">Update Forecast Date</button>
         <button id="fillEntireLevel" type="button" class="button secondary">Deliver Entire Remaining Level</button>
         <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Delivery Inputs</button>
       </div>
@@ -267,6 +365,12 @@
         <label>Revision<input id="editRevision" autocomplete="off" /></label>
         <label>Customer<input id="editCustomer" autocomplete="off" /></label>
         <label>Sales<input id="editSales" autocomplete="off" /></label>
+        <label>Project Type
+          <select id="editProjectType">
+            <option value="multi">Multi-family</option>
+            <option value="sfd">SFD</option>
+          </select>
+        </label>
         <label class="full">Address (Project Name)<textarea id="editAddress" rows="2"></textarea></label>
         <label>Project Default Delivery Date<input id="editProjectDate" type="date" /></label>
         <label class="checkbox-row"><input id="editApplyDateAll" type="checkbox" /> Apply this date to all levels</label>
