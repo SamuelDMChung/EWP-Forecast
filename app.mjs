@@ -5,14 +5,16 @@ import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 11;
 const EPSILON = 0.0001;
+const HISTORY_PAGE_SIZE = 100;
 
 let state = { version: SCHEMA_VERSION, projects: [] };
 let draft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
 let activeEditProject = null;
+let activeDeleteProject = null;
 let matrixScrollLeft = 0;
 let matrixScrollTop = 0;
 let syncInProgress = false;
@@ -22,6 +24,8 @@ let currentUserName = "";
 let loginResolve = null;
 let activityRows = [];
 let historyLoaded = false;
+let historyLimit = HISTORY_PAGE_SIZE;
+let historyHasMore = false;
 let realtimeRefreshTimer = null;
 let historyRefreshTimer = null;
 let realtimeState = "starting";
@@ -351,7 +355,10 @@ async function loadPdfJs() {
 function setTab(tabName) {
   document.querySelectorAll(".tab").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === tabName));
   document.querySelectorAll(".tab-panel").forEach(panel => panel.classList.toggle("active", panel.id === tabName));
-  if (tabName === "history") loadAndRenderHistory();
+  if (tabName === "history") {
+    if (!historyLoaded) loadAndRenderHistory({ reset: true });
+    else renderHistory();
+  }
 }
 
 function todayIso() {
@@ -373,6 +380,44 @@ function formatDate(date) {
   if (!date) return "No date";
   const [y, m, d] = date.split("-").map(Number);
   return new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", year: "numeric" }).format(new Date(y, m - 1, d));
+}
+
+function addDaysIso(date, days) {
+  if (!date) return "";
+  const [y, m, d] = String(date).split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const value = new Date(Date.UTC(y, m - 1, d));
+  value.setUTCDate(value.getUTCDate() + Number(days || 0));
+  return value.toISOString().slice(0, 10);
+}
+
+function applyProjectDateToDraft() {
+  if (!draft?.levels?.length) return;
+  const projectDate = $("projectDate").value || "";
+  draft.defaultEstimatedDeliveryDate = projectDate;
+
+  if ($("applyDateAll").checked) {
+    draft.levels.forEach(level => { level.estimatedDeliveryDate = projectDate; });
+    return;
+  }
+
+  if ($("staggerWeekly").checked) {
+    draft.levels.forEach((level, index) => {
+      level.estimatedDeliveryDate = projectDate ? addDaysIso(projectDate, index * 7) : "";
+    });
+    return;
+  }
+
+  // The project date is always the starting/first-level date even when no bulk rule is selected.
+  draft.levels[0].estimatedDeliveryDate = projectDate;
+}
+
+function continueWeeklyScheduleFrom(levelIndex) {
+  if (!draft?.levels?.length || levelIndex < 0 || levelIndex >= draft.levels.length) return;
+  const anchor = draft.levels[levelIndex].estimatedDeliveryDate || "";
+  for (let index = levelIndex + 1; index < draft.levels.length; index += 1) {
+    draft.levels[index].estimatedDeliveryDate = anchor ? addDaysIso(anchor, (index - levelIndex) * 7) : "";
+  }
 }
 
 function monthKey(date) { return date ? date.slice(0, 7) : ""; }
@@ -491,7 +536,6 @@ async function handlePdf(file) {
     const parsed = parseMaterialReportLines(lines, file.name);
     if (!parsed.levels.length) throw new Error("I found the PDF text, but no Total Lengths section could be confidently read.");
 
-    const useProjectDate = $("applyDateAll").checked;
     draft = {
       sourceFileName: file.name,
       projectNumber: parsed.projectNumber || "",
@@ -503,12 +547,13 @@ async function handlePdf(file) {
       levels: parsed.levels.map(level => ({
         id: uid(),
         name: level.name,
-        estimatedDeliveryDate: useProjectDate ? ($("projectDate").value || "") : "",
+        estimatedDeliveryDate: "",
         materials: level.materials.map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
         filteredMaterials: (level.filteredMaterials || []).map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
         deliveries: []
       }))
     };
+    applyProjectDateToDraft();
 
     $("projectNumber").value = draft.projectNumber;
     $("revision").value = draft.revision;
@@ -537,7 +582,7 @@ function renderDraftLevels() {
           <input class="level-name" data-level-index="${levelIndex}" value="${escapeHtml(level.name)}" />
         </label>
         <label>Estimated Delivery
-          <input class="level-date" data-level-index="${levelIndex}" type="date" value="${escapeHtml(level.estimatedDeliveryDate || "")}" ${$("applyDateAll").checked ? "disabled" : ""} />
+          <input class="level-date" data-level-index="${levelIndex}" type="date" value="${escapeHtml(level.estimatedDeliveryDate || "")}" />
         </label>
         <button class="button ghost remove-level" data-level-index="${levelIndex}" type="button">Remove Level</button>
       </div>
@@ -598,6 +643,7 @@ function resetIntake() {
   $("address").value = "";
   $("projectDate").value = "";
   $("applyDateAll").checked = false;
+  $("staggerWeekly").checked = false;
   $("parseStatus").className = "status muted";
   $("parseStatus").textContent = "No PDF selected.";
   $("reviewCard").classList.add("hidden");
@@ -752,13 +798,27 @@ async function saveDraftProject() {
   }
 }
 
-function visibleProjects(showDelivered) {
+function projectMatchesMatrixSearch(project) {
+  const query = normalizeSpaces($("projectSearch")?.value || "").toLowerCase();
+  if (!query) return true;
+  const haystack = [
+    project.projectNumber,
+    project.revision,
+    project.address,
+    project.customer,
+    project.sales
+  ].map(value => normalizeSpaces(value || "")).join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+function visibleProjects(showDelivered, { ignoreSearch = false } = {}) {
   return state.projects
     .map(project => {
       const visibleLevels = (project.levels || []).filter(level => showDelivered || levelStats(level).status !== "delivered");
       return { project, visibleLevels };
     })
-    .filter(item => item.visibleLevels.length > 0);
+    .filter(item => item.visibleLevels.length > 0)
+    .filter(item => ignoreSearch || projectMatchesMatrixSearch(item.project));
 }
 
 function buildMatrixColumns(showDelivered) {
@@ -947,19 +1007,33 @@ function updateMatrixTopScrollbar() {
 
 function renderMatrix() {
   const showDelivered = $("showDelivered").checked;
+  const query = normalizeSpaces($("projectSearch")?.value || "");
+  const eligibleProjects = visibleProjects(showDelivered, { ignoreSearch: true });
+  const matchingProjects = visibleProjects(showDelivered);
   const columns = buildMatrixColumns(showDelivered);
   const levelRefs = columns.flatMap(column => column.levels.map(level => ({ project: column.project, level })));
   const materials = uniqueMaterials(levelRefs);
   const wrap = $("matrixWrap");
   const empty = $("matrixEmpty");
+  const count = $("projectSearchCount");
+  const clear = $("clearProjectSearch");
+
+  if (count) {
+    count.textContent = query
+      ? `${matchingProjects.length} of ${eligibleProjects.length} project${eligibleProjects.length === 1 ? "" : "s"}`
+      : `${eligibleProjects.length} project${eligibleProjects.length === 1 ? "" : "s"}`;
+  }
+  clear?.classList.toggle("hidden", !query);
 
   if (!columns.length || !materials.length) {
+    empty.textContent = query ? "No projects match this search." : "Add a project to build the material matrix.";
     empty.classList.remove("hidden");
     wrap.classList.add("hidden");
     $("matrixTopScroll").classList.add("hidden");
     wrap.innerHTML = "";
     return;
   }
+  empty.textContent = "Add a project to build the material matrix.";
 
   const head = columns.map(column => column.type === "project" ? collapsedProjectHeaderHtml(column.project) : levelHeaderHtml(column.project, column.level)).join("");
   const rows = materials.map(materialName => {
@@ -1030,7 +1104,8 @@ const ACTIVITY_LABELS = {
   update_forecast_date: "Delivery date changed",
   record_delivery: "Delivery recorded",
   undo_delivery: "Delivery undone",
-  remove_level: "Level removed"
+  remove_level: "Level removed",
+  delete_project: "Project deleted"
 };
 
 function actionLabel(action) {
@@ -1071,6 +1146,12 @@ function activityDetailText(row) {
   if (row.action === "undo_delivery") return d.delivery_date ? `Reversed delivery dated ${formatDate(d.delivery_date)}` : "Delivery quantities restored";
   if (row.action === "update_forecast_date") return `${formatDate(d.from)} → ${formatDate(d.to)}`;
   if (row.action === "remove_level") return d.level_name ? `Removed ${d.level_name}` : "Level removed";
+  if (row.action === "delete_project") {
+    const reason = d.reason ? `Reason: ${d.reason}` : "";
+    const note = d.note ? `Note: ${d.note}` : "";
+    const packages = Number.isFinite(Number(d.packages_removed)) ? `${d.packages_removed} package${Number(d.packages_removed) === 1 ? "" : "s"} removed` : "";
+    return [packages, reason, note].filter(Boolean).join(" · ") || "Project deleted";
+  }
   if (row.action === "update_project") {
     const changes = d.changes && typeof d.changes === "object" ? Object.entries(d.changes) : [];
     const text = changes.map(([field, values]) => `${field}: ${values?.from || "—"} → ${values?.to || "—"}`).join("; ");
@@ -1120,7 +1201,10 @@ function renderHistory() {
     return true;
   });
 
-  status.textContent = `${filtered.length} entr${filtered.length === 1 ? "y" : "ies"}${filtered.length !== activityRows.length ? ` shown from ${activityRows.length}` : ""}. History is read-only.`;
+  const scopeText = historyHasMore ? `Loaded latest ${activityRows.length} entries` : `Loaded ${activityRows.length} entr${activityRows.length === 1 ? "y" : "ies"}`;
+  status.textContent = `${filtered.length} entr${filtered.length === 1 ? "y" : "ies"}${filtered.length !== activityRows.length ? ` shown from ${activityRows.length}` : ""}. ${scopeText}. History is read-only.`;
+  const olderButton = $("loadOlderHistory");
+  if (olderButton) olderButton.classList.toggle("hidden", !historyHasMore);
   if (!filtered.length) {
     wrap.innerHTML = `<div class="history-empty">No entry history matches the current filters.</div>`;
     wrap.classList.remove("hidden");
@@ -1145,12 +1229,15 @@ function renderHistory() {
   wrap.classList.remove("hidden");
 }
 
-async function loadAndRenderHistory({ silent = false } = {}) {
+async function loadAndRenderHistory({ silent = false, reset = false } = {}) {
   const status = $("historyStatus");
   if (!status) return;
+  if (reset) historyLimit = HISTORY_PAGE_SIZE;
   if (!silent) status.textContent = "Loading entry history…";
   try {
-    activityRows = (await loadActivityRows({ limit: 750 })) || [];
+    const rows = (await loadActivityRows({ limit: historyLimit + 1 })) || [];
+    historyHasMore = rows.length > historyLimit;
+    activityRows = rows.slice(0, historyLimit);
     historyLoaded = true;
     renderHistory();
   } catch (error) {
@@ -1472,6 +1559,58 @@ async function importLegacyBrowserData() {
   }
 }
 
+function openDeleteProjectDialog() {
+  if (!activeEditProject) return;
+  activeDeleteProject = activeEditProject;
+  const project = activeDeleteProject;
+  const packages = (project.levels || []).length;
+  $("deleteProjectTitle").textContent = `Delete ${project.projectNumber || "Project"}?`;
+  $("deleteProjectSummary").textContent = `${project.address || "Address / Project Name not entered"} · ${packages} package${packages === 1 ? "" : "s"} will be removed.`;
+  $("deleteProjectReason").value = "";
+  $("deleteProjectNote").value = "";
+  $("projectEditDialog").close();
+  $("deleteProjectDialog").showModal();
+}
+
+async function deleteActiveProject() {
+  if (!activeDeleteProject) return;
+  const project = activeDeleteProject;
+  const reason = $("deleteProjectReason").value;
+  const note = normalizeSpaces($("deleteProjectNote").value);
+  const packagesRemoved = (project.levels || []).length;
+  const button = $("confirmDeleteProject");
+  button.disabled = true;
+  button.textContent = "Deleting…";
+  try {
+    const deleted = await deleteRows("projects", { id: `eq.${project.id}`, version: `eq.${project.version}` });
+    if (!deleted?.length) throw new Error("This project was changed by another user before it could be deleted. Shared data will be refreshed so you can review the latest version.");
+
+    await recordActivity("project", project.id, "delete_project", {
+      project_number: project.projectNumber || "",
+      revision: project.revision || "",
+      address_project_name: project.address || "",
+      customer: project.customer || "",
+      sales: project.sales || "",
+      packages_removed: packagesRemoved,
+      reason,
+      note
+    });
+
+    activeDeleteProject = null;
+    activeEditProject = null;
+    $("deleteProjectDialog").close("deleted");
+    await syncFromCloud({ silent: true });
+    setTab("matrix");
+  } catch (error) {
+    console.error(error);
+    alert(error.message);
+    await syncFromCloud({ silent: true });
+  } finally {
+    button.disabled = false;
+    button.textContent = "Delete Project Permanently";
+  }
+}
+
 async function updateForecastDate() {
   if (!activeDelivery) return;
   const nextDate = $("forecastDateEdit").value;
@@ -1582,33 +1721,82 @@ function wireEvents() {
     if (file) handlePdf(file);
   });
 
-  $("projectDate").addEventListener("change", () => {
+  const handleProjectDateChange = () => {
     if (!draft) return;
-    draft.defaultEstimatedDeliveryDate = $("projectDate").value;
-    if (!$("applyDateAll").checked) return;
-    draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
+    syncDraftFromInputs();
+    applyProjectDateToDraft();
+    renderDraftLevels();
+  };
+  $("projectDate").addEventListener("change", handleProjectDateChange);
+
+  $("applyDateAll").addEventListener("change", () => {
+    if (!draft) {
+      if ($("applyDateAll").checked) $("staggerWeekly").checked = false;
+      return;
+    }
+    syncDraftFromInputs();
+    if ($("applyDateAll").checked) {
+      $("staggerWeekly").checked = false;
+      applyProjectDateToDraft();
+    }
     renderDraftLevels();
   });
 
-  $("applyDateAll").addEventListener("change", () => {
-    if (!draft) return;
+  $("staggerWeekly").addEventListener("change", () => {
+    if (!draft) {
+      if ($("staggerWeekly").checked) $("applyDateAll").checked = false;
+      return;
+    }
     syncDraftFromInputs();
-    if ($("applyDateAll").checked) draft.levels.forEach(level => { level.estimatedDeliveryDate = $("projectDate").value; });
+    if ($("staggerWeekly").checked) {
+      $("applyDateAll").checked = false;
+      applyProjectDateToDraft();
+    }
     renderDraftLevels();
   });
 
   $("addLevelBtn").addEventListener("click", () => {
     if (!draft) return;
     syncDraftFromInputs();
+    let nextDate = "";
+    if ($("applyDateAll").checked) nextDate = $("projectDate").value || "";
+    else if ($("staggerWeekly").checked) {
+      const previous = draft.levels[draft.levels.length - 1]?.estimatedDeliveryDate || $("projectDate").value || "";
+      nextDate = previous ? addDaysIso(previous, 7) : "";
+    }
     draft.levels.push({
       id: uid(),
       name: `Level ${draft.levels.length + 1}`,
-      estimatedDeliveryDate: $("applyDateAll").checked ? $("projectDate").value : "",
+      estimatedDeliveryDate: nextDate,
       materials: [{ id: uid(), material: "", requiredLf: 0 }],
       filteredMaterials: [],
       deliveries: []
     });
     renderDraftLevels();
+  });
+
+  $("levelEditor").addEventListener("change", event => {
+    const input = event.target.closest(".level-date");
+    if (!input || !draft) return;
+    syncDraftFromInputs();
+    const levelIndex = Number(input.dataset.levelIndex);
+
+    if ($("applyDateAll").checked) {
+      // A manual exception breaks the "same date for all" rule, while preserving all current dates.
+      $("applyDateAll").checked = false;
+      renderDraftLevels();
+      return;
+    }
+
+    if ($("staggerWeekly").checked) {
+      // The edited level becomes a new anchor and every later level remains one week apart.
+      if (levelIndex === 0) {
+        $("projectDate").value = draft.levels[0].estimatedDeliveryDate || "";
+        draft.defaultEstimatedDeliveryDate = $("projectDate").value;
+      }
+      continueWeeklyScheduleFrom(levelIndex);
+      renderDraftLevels();
+    }
   });
 
   $("levelEditor").addEventListener("click", event => {
@@ -1618,6 +1806,7 @@ function wireEvents() {
     const levelIndex = Number(button.dataset.levelIndex);
     if (button.classList.contains("remove-level")) {
       draft.levels.splice(levelIndex, 1);
+      if ($("staggerWeekly").checked) applyProjectDateToDraft();
       renderDraftLevels();
     } else if (button.classList.contains("restore-filtered")) {
       const filteredIndex = Number(button.dataset.filteredIndex);
@@ -1635,6 +1824,12 @@ function wireEvents() {
 
   $("saveProject").addEventListener("click", saveDraftProject);
   $("showDelivered").addEventListener("change", renderMatrix);
+  $("projectSearch").addEventListener("input", renderMatrix);
+  $("clearProjectSearch").addEventListener("click", () => {
+    $("projectSearch").value = "";
+    renderMatrix();
+    $("projectSearch").focus();
+  });
   $("refreshCloud").addEventListener("click", () => syncFromCloud());
   $("refreshCloudForecast").addEventListener("click", () => syncFromCloud());
 
@@ -1701,12 +1896,26 @@ function wireEvents() {
   $("removeLevel").addEventListener("click", removeActiveLevel);
 
   $("saveProjectEdit").addEventListener("click", saveProjectEdit);
+  $("openDeleteProject").addEventListener("click", openDeleteProjectDialog);
+  $("confirmDeleteProject").addEventListener("click", deleteActiveProject);
   wireBackdropClose($("deliveryDialog"));
   wireBackdropClose($("projectEditDialog"));
+  wireBackdropClose($("deleteProjectDialog"));
 
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);
   $("refreshHistory").addEventListener("click", () => loadAndRenderHistory());
+  $("loadOlderHistory").addEventListener("click", async () => {
+    const button = $("loadOlderHistory");
+    button.disabled = true;
+    button.textContent = "Loading…";
+    historyLimit += HISTORY_PAGE_SIZE;
+    try { await loadAndRenderHistory({ silent: true }); }
+    finally {
+      button.disabled = false;
+      button.textContent = "Load 100 older entries";
+    }
+  });
   ["historySearch", "historyUserFilter", "historyActionFilter", "historyDateFilter"].forEach(id => {
     $(id).addEventListener(id === "historySearch" ? "input" : "change", renderHistory);
   });

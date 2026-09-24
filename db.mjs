@@ -53,7 +53,7 @@ export async function loadCloudRows() {
 }
 
 
-export async function loadActivityRows({ limit = 750 } = {}) {
+export async function loadActivityRows({ limit = 101 } = {}) {
   return request("activity_log", {
     params: { select: "*", order: "created_at.desc", limit: String(limit) }
   });

@@ -1,6 +1,26 @@
-# EWP Material Forecast — V0.9 Secure Team Login
+# EWP Material Forecast — V0.11
 
-**Developed by Samuel Chung**
+**Developed by Samuel Chung @ Griff**
+
+## V0.11 changes
+
+- The Project Defaults **Estimated Delivery Date** automatically becomes the first detected level's date even when no bulk-date option is selected.
+- Adds **Each subsequent level 1 week after previous level**. When enabled, detected levels are scheduled in seven-day increments from the project date.
+- **Use this date for all levels** and the weekly option are mutually exclusive.
+- A manual level-date edit while **Use this date for all levels** is active turns that option off and preserves the exception.
+- A manual level-date edit while the weekly option is active makes that level a new scheduling anchor; later levels recalculate at one-week intervals. Editing the first level also updates the project starting date.
+- Adds a live **Projects & Materials** search/filter across Project #, Revision, Address (Project Name), Customer and Sales, with a matching-project count and Clear action.
+- Existing V0.10 deletion, lazy history, Realtime, Web Stiffener filtering, Supabase authentication and RLS-compatible access are preserved.
+
+
+## V0.10 changes
+
+- Adds **Delete Project** from the Projects & Materials project editor. Project deletion cascades through its levels, materials and delivery records.
+- Deleted project number/name can be reused immediately; deletion metadata remains only in Entry History.
+- Optional deletion reason/note is retained in the audit log.
+- Entry History now lazy-loads the latest 100 records at a time, with **Load 100 older entries** for deeper history instead of downloading a large history table at once.
+- Header credit updated to **Developed by Samuel Chung @ Griff**.
+
 
 V0.9 adds Supabase email/password authentication to the shared-team V0.7 application. The app remains a static GitHub Pages site, while operational project data stays in Supabase.
 

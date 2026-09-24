@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.9 · Developed by Samuel Chung</p>
+      <p class="subtitle">Version 0.11 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -64,6 +64,7 @@
             <label class="full">Address (Project Name)<textarea id="address" rows="2" placeholder="Address / project name"></textarea></label>
             <label>Estimated Delivery Date<input id="projectDate" type="date" /></label>
             <label class="checkbox-row"><input id="applyDateAll" type="checkbox" /> Use this date for all levels</label>
+            <label class="checkbox-row full"><input id="staggerWeekly" type="checkbox" /> Each subsequent level 1 week after previous level</label>
           </div>
         </article>
       </div>
@@ -95,6 +96,13 @@
           <button id="refreshCloud" class="button secondary">Refresh</button>
           <button id="exportMatrixCsv" class="button secondary">Export CSV</button>
         </div>
+      </div>
+      <div class="project-search-bar">
+        <label class="project-search-field">Search projects
+          <input id="projectSearch" type="search" placeholder="Customer, sales, project # or project name" autocomplete="off" />
+        </label>
+        <span id="projectSearchCount" class="project-search-count"></span>
+        <button id="clearProjectSearch" type="button" class="button ghost hidden">Clear</button>
       </div>
       <div id="matrixEmpty" class="empty-state">Add a project to build the material matrix.</div>
       <div id="matrixTopScroll" class="matrix-top-scroll hidden" aria-label="Horizontal project scroll">
@@ -137,6 +145,9 @@
       </div>
       <div id="historyStatus" class="status muted">Open this tab to load entry history.</div>
       <div id="historyWrap" class="table-wrap hidden"></div>
+      <div class="history-pagination">
+        <button id="loadOlderHistory" type="button" class="button secondary hidden">Load 100 older entries</button>
+      </div>
     </section>
   </main>
 
@@ -199,8 +210,44 @@
       </div>
 
       <div class="dialog-footer">
+        <button id="openDeleteProject" type="button" class="button ghost danger-action">Delete Project…</button>
         <button value="cancel" class="button ghost">Cancel</button>
         <button id="saveProjectEdit" type="button" class="button primary">Save Project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteProjectDialog" class="dialog compact-dialog">
+    <form method="dialog" id="deleteProjectForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step danger-text">DELETE PROJECT</p>
+          <h2 id="deleteProjectTitle">Delete Project</h2>
+          <p id="deleteProjectSummary" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="delete-project-warning">
+        This permanently removes the active project, all of its levels, materials and delivery records. The deletion itself remains in Entry History.
+      </div>
+
+      <div class="form-grid">
+        <label>Reason (optional)
+          <select id="deleteProjectReason">
+            <option value="">No reason</option>
+            <option value="Wrong entry">Wrong entry</option>
+            <option value="Cancelled project">Cancelled project</option>
+            <option value="Duplicate">Duplicate</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label class="full">Additional note (optional)<textarea id="deleteProjectNote" rows="2" placeholder="Add context for Entry History"></textarea></label>
+      </div>
+
+      <div class="dialog-footer">
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="confirmDeleteProject" type="button" class="button danger-button">Delete Project Permanently</button>
       </div>
     </form>
   </dialog>
