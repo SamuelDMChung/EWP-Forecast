@@ -495,7 +495,11 @@ function monthLabel(key) {
   const [y, m] = key.split("-").map(Number);
   return new Intl.DateTimeFormat("en-CA", { month: "short", year: "numeric" }).format(new Date(y, m - 1, 1));
 }
-function normalizeMaterialKey(material) { return normalizeSpaces(material).toLowerCase(); }
+function normalizeLiteralMaterialKey(material) { return normalizeSpaces(material).toLowerCase(); }
+function normalizeMaterialKey(material) {
+  const signature = materialMatchSignature(material);
+  return signature ? `product-size:${signature}` : normalizeLiteralMaterialKey(normalizePoMaterialDescription(material));
+}
 
 function deliveryTotals(level) {
   const totals = new Map();
@@ -1768,46 +1772,105 @@ function purchaseOrderForNumber(poNumber) {
   return (state.purchaseOrders || []).find(order => normalizeSpaces(order.poNumber || "").toLowerCase() === key) || null;
 }
 
+function parseMaterialDimensionToken(value) {
+  const text = normalizeSpaces(String(value || "")).replace(/["”]/g, "");
+  const match = text.match(/^(\d+(?:\.\d+)?)(?:[-\s]+(\d+)\s*\/\s*(\d+))?$/);
+  if (!match) return NaN;
+  let number = Number(match[1]);
+  if (match[2] && match[3] && Number(match[3])) number += Number(match[2]) / Number(match[3]);
+  return Number.isFinite(number) ? Math.round(number * 10000) / 10000 : NaN;
+}
+
+function materialDimensionPair(materialName) {
+  const text = String(materialName || "").replace(/[×✕]/g, "x");
+  const match = text.match(/(\d+(?:\.\d+)?(?:[-\s]+\d+\s*\/\s*\d+)?)\s*(?:["”])?\s*x\s*(\d+(?:\.\d+)?(?:[-\s]+\d+\s*\/\s*\d+)?)/i);
+  if (!match) return [];
+  const values = [parseMaterialDimensionToken(match[1]), parseMaterialDimensionToken(match[2])];
+  return values.every(Number.isFinite) ? values : [];
+}
+
 function materialDimensionValues(materialName) {
-  const values = [];
+  const values = materialDimensionPair(materialName);
   const text = String(materialName || "");
-  const regex = /(\d+(?:\.\d+)?)(?:[-\s]+(\d+)\s*\/\s*(\d+))?\s*(?=["”]|\bx\b)/gi;
+  const regex = /(\d+(?:\.\d+)?(?:[-\s]+\d+\s*\/\s*\d+)?)\s*["”]/g;
   let match;
   while ((match = regex.exec(text))) {
-    let value = Number(match[1]);
-    if (match[2] && match[3] && Number(match[3])) value += Number(match[2]) / Number(match[3]);
-    if (Number.isFinite(value)) values.push(Math.round(value * 10000) / 10000);
+    const value = parseMaterialDimensionToken(match[1]);
+    if (Number.isFinite(value) && !values.some(existing => Math.abs(existing - value) < 0.0001)) values.push(value);
   }
   return values;
+}
+
+function materialProductFamily(normalizedMaterialName) {
+  const normalized = String(normalizedMaterialName || "").toUpperCase();
+  if (/\bLSL\b|\bTIMBERSTRAND\b/.test(normalized)) return "LSL";
+  if (/\bLVL\b|\bMICROLLAM\b/.test(normalized)) return "LVL";
+  if (/\bPSL\b|\bPARALLAM\b/.test(normalized)) return "PSL";
+  return "";
 }
 
 function materialMatchSignature(materialName) {
   const normalized = normalizePoMaterialDescription(materialName).toUpperCase();
   const tji = normalized.match(/\bTJI\s*(\d+)\b/);
+  const pair = materialDimensionPair(normalized);
   const dims = materialDimensionValues(normalized);
-  if (tji && dims.length) return `TJI|${tji[1]}|${Math.max(...dims)}`;
+  if (tji) {
+    const depth = pair.length ? Math.max(...pair) : (dims.length ? Math.max(...dims) : NaN);
+    if (Number.isFinite(depth)) return `TJI|${tji[1]}|${depth}`;
+  }
 
-  const type = /\bLSL\b/.test(normalized) ? "LSL" : /\bLVL\b/.test(normalized) ? "LVL" : "";
-  if (type && dims.length >= 2) {
-    const sorted = [...dims].sort((a, b) => a - b);
-    const grade = normalized.match(/\b(?:\d+(?:\.\d+)?E|SSS)\b/)?.[0] || "";
-    return `${type}|${sorted[0]}|${sorted[sorted.length - 1]}|${grade}`;
+  const type = materialProductFamily(normalized);
+  const size = pair.length >= 2 ? pair : dims;
+  if (type && size.length >= 2) {
+    const sorted = [...size].sort((a, b) => a - b);
+    return `${type}|${sorted[0]}|${sorted[sorted.length - 1]}`;
   }
   return "";
 }
 
-function canonicalPurchaseMaterialName(materialName) {
+function stripNonIdentityMaterialDescriptors(materialName) {
   const normalized = normalizePoMaterialDescription(materialName);
+  if (!materialMatchSignature(normalized)) return normalized;
+  return normalizeSpaces(normalized
+    .replace(/\bSSS\b/gi, " ")
+    .replace(/\b\d+(?:\.\d+)?E\b/gi, " ")
+    .replace(/\bTIMBERSTRAND\b/gi, " ")
+    .replace(/\bMICROLLAM\b/gi, " ")
+    .replace(/\bPARALLAM\b/gi, " "));
+}
+
+function canonicalPurchaseMaterialName(materialName) {
+  const normalized = stripNonIdentityMaterialDescriptors(materialName);
   const key = normalizeMaterialKey(normalized);
   const known = allKnownMaterialNames();
-  const exact = known.find(name => normalizeMaterialKey(normalizePoMaterialDescription(name)) === key);
-  if (exact) return exact;
-  const signature = materialMatchSignature(normalized);
-  if (signature) {
-    const matches = known.filter(name => materialMatchSignature(name) === signature);
-    if (matches.length === 1) return matches[0];
+  const exactIdentity = known.find(name => normalizeMaterialKey(name) === key);
+  return exactIdentity || normalized;
+}
+
+function mergeCanonicalPurchaseItems(items = []) {
+  const grouped = new Map();
+  for (const source of items) {
+    const material = canonicalPurchaseMaterialName(source.material);
+    const key = normalizeMaterialKey(material);
+    if (!key) continue;
+    let item = grouped.get(key);
+    if (!item) {
+      item = {
+        id: uid(),
+        material,
+        quantityLf: 0,
+        rawDescriptions: [],
+        breakdown: []
+      };
+      grouped.set(key, item);
+    }
+    item.quantityLf += Number(source.quantityLf || 0);
+    for (const raw of source.rawDescriptions || []) {
+      if (!item.rawDescriptions.includes(raw)) item.rawDescriptions.push(raw);
+    }
+    item.breakdown.push(...(source.breakdown || []));
   }
-  return normalized;
+  return [...grouped.values()].sort((a, b) => a.material.localeCompare(b.material, undefined, { numeric: true }));
 }
 
 function updateAddInventoryMaterialButton() {
@@ -1995,7 +2058,7 @@ function renderPurchaseDraft() {
 
   const rows = (purchaseDraft.items || []).map((item, index) => {
     const raw = (item.rawDescriptions || []).join(" / ");
-    const normalizedSource = raw && normalizeMaterialKey(raw) !== normalizeMaterialKey(item.material)
+    const normalizedSource = raw && normalizeLiteralMaterialKey(raw) !== normalizeLiteralMaterialKey(item.material)
       ? `<span class="purchase-source-name">PO: ${escapeHtml(raw)}</span>` : "";
     const detail = Array.isArray(item.breakdown) && item.breakdown.length
       ? item.breakdown.map(part => [
@@ -2040,13 +2103,7 @@ async function handlePurchaseWorkbook(file) {
   status.textContent = `Reading ${file.name}…`;
   try {
     const parsed = await parsePurchaseWorkbook(file);
-    const items = parsed.items.map(item => ({
-      id: uid(),
-      material: canonicalPurchaseMaterialName(item.material),
-      quantityLf: Number(item.quantityLf || 0),
-      rawDescriptions: item.rawDescriptions || [],
-      breakdown: item.breakdown || []
-    }));
+    const items = mergeCanonicalPurchaseItems(parsed.items);
     purchaseDraft = {
       sourceFileName: file.name,
       poNumber: parsed.poNumber || "",
@@ -2064,9 +2121,9 @@ async function handlePurchaseWorkbook(file) {
     $("purchaseExpectedDate").value = "";
     $("purchaseSourceFile").value = file.name;
     $("purchaseNote").value = "";
-    const aliases = parsed.items.filter(item => (item.rawDescriptions || []).some(raw => normalizeMaterialKey(raw) !== normalizeMaterialKey(item.material))).length;
+    const normalizedCount = items.filter(item => (item.rawDescriptions || []).some(raw => normalizeLiteralMaterialKey(raw) !== normalizeLiteralMaterialKey(item.material))).length;
     status.className = "status success";
-    status.textContent = `Read ${parsed.items.length} material${parsed.items.length === 1 ? "" : "s"}, ${formatNumber(parsed.totalLf)} LF${parsed.poNumber ? ` · PO ${parsed.poNumber}${parsed.poNumberSource === "filename" ? " from filename" : ""}` : ""}.${aliases ? ` ${aliases} material name${aliases === 1 ? " was" : "s were"} normalized using PO aliases.` : ""}`;
+    status.textContent = `Read ${items.length} material${items.length === 1 ? "" : "s"}, ${formatNumber(parsed.totalLf)} LF${parsed.poNumber ? ` · PO ${parsed.poNumber}${parsed.poNumberSource === "filename" ? " from filename" : ""}` : ""}.${normalizedCount ? ` ${normalizedCount} material name${normalizedCount === 1 ? " was" : "s were"} matched by product + size.` : ""}`;
     renderPurchaseDraft();
   } catch (error) {
     console.error(error);
@@ -2753,8 +2810,9 @@ async function saveInventoryRow(row) {
 }
 
 async function addTrackedInventoryMaterial() {
-  const materialName = normalizeSpaces($("inventoryNewMaterial")?.value || "");
-  if (!materialName) return alert("Enter a material to add to inventory.");
+  const enteredMaterialName = normalizeSpaces($("inventoryNewMaterial")?.value || "");
+  if (!enteredMaterialName) return alert("Enter a material to add to inventory.");
+  const materialName = canonicalPurchaseMaterialName(enteredMaterialName);
   await syncFromCloud({ silent: true });
   const key = normalizeMaterialKey(materialName);
   if (allKnownMaterialNames().some(name => normalizeMaterialKey(name) === key)) {
@@ -2775,7 +2833,8 @@ async function addTrackedInventoryMaterial() {
 }
 
 async function addIncomingOrder() {
-  const materialName = normalizeSpaces($("incomingMaterial")?.value || "");
+  const enteredMaterialName = normalizeSpaces($("incomingMaterial")?.value || "");
+  const materialName = canonicalPurchaseMaterialName(enteredMaterialName);
   const quantityLf = Number($("incomingLf")?.value || 0);
   const expectedDate = $("incomingDate")?.value || "";
   const reference = normalizeSpaces($("incomingReference")?.value || "");

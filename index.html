@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.17 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.18 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -231,7 +231,7 @@
             <span>or click to choose a file</span>
           </label>
           <div id="purchaseParseStatus" class="status muted">No Excel file selected.</div>
-          <p class="small-note">The workbook stays on this computer. The importer reads PO #, order date, material descriptions and Lineal footage. PO shorthand is normalized as <strong>ML → LVL</strong> and <strong>TS → LSL</strong>.</p>
+          <p class="small-note">The workbook stays on this computer. The importer reads PO #, order date, material descriptions and Lineal footage. Materials are matched by <strong>product + size</strong>; PO shorthand uses <strong>ML → LVL</strong> and <strong>TS → LSL</strong>, while nonessential descriptors such as <strong>SSS</strong> or grade text do not create a separate inventory material.</p>
         </article>
 
         <article class="card">

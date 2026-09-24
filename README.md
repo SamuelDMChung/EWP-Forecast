@@ -1,6 +1,24 @@
-# EWP Material Forecast — V0.17
+# EWP Material Forecast — V0.18
 
 **Developed by Samuel Chung @ Griff**
+
+
+## V0.18 changes
+
+V0.18 makes material identity tolerant of supplier/project naming differences by matching EWP materials on their actual product family and size rather than the full description string.
+
+- Uses a shared **product + size** material identity across Projects, Inventory and Purchasing.
+- Treats these as the same material: `ML 1-3/4 x 9-1/4 SSS`, `LVL 1-3/4 x 9-1/4`, and equivalent decimal/fraction formatting.
+- Keeps **ML → LVL** and **TS → LSL** aliases. Full-word TimberStrand/LSL and Microllam/LVL naming are also recognized when product identity is determined.
+- Ignores nonessential grade/description text such as **SSS** and values such as **1.3E** when deciding whether two LVL/LSL/PSL entries are the same stock material.
+- For TJI, identity remains **TJI series + depth** so a TJI 230 and TJI 360 of the same depth stay separate, while a PO description that includes flange width still matches a project description that only lists the joist depth.
+- PO review keeps the mill's original description underneath the normalized material for reference.
+- If multiple PO rows/descriptions normalize to the same product + size, their footage and package/length detail are combined automatically into one reviewed material line.
+- The same identity logic is used by Stock Position, incoming PO footage, manual incoming entries, Add to Inventory duplicate detection, forecasts, and revision matching.
+
+### Supabase change for V0.18
+
+**No new Supabase migration is required when upgrading from V0.17.** V0.18 changes frontend matching/normalization only. If the database has not yet been migrated for V0.17, run `supabase_v0_17.sql` before deploying.
 
 ## V0.17 changes
 
@@ -40,7 +58,7 @@ V0.16 expands the V0.15 project forecast into the inventory / purchasing workflo
 
 ### Required Supabase change for V0.16
 
-The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.17 package, run **`supabase_v0_17.sql` instead**; it includes these V0.16 schema additions plus the new PO schema.
+The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.18 package, **no new SQL is needed if V0.17 is already deployed**. If the database is still on V0.16 or earlier, run **`supabase_v0_17.sql`**; it includes these V0.16 schema additions plus the PO schema required by V0.17/V0.18.
 
 ## V0.15 changes
 
