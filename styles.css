@@ -51,6 +51,7 @@ button { cursor: pointer; }
   background: rgba(255, 255, 255, .96);
   border-bottom: 1px solid var(--border);
   backdrop-filter: blur(10px);
+  overflow-x: auto;
 }
 .tab {
   border: 0;
@@ -1141,3 +1142,52 @@ select { font: inherit; }
 }
 .schedule-overdue td { background: #fff8eb; }
 .schedule-overdue td:first-child { color: var(--warning); font-weight: 850; }
+
+/* V0.17 purchasing intake */
+.form-validation.warning {
+  border-color: #f0cf87;
+  background: #fff8e8;
+  color: #8a5a00;
+}
+.purchase-intake-grid .card { min-width: 0; }
+.purchase-review-card { padding: 20px; }
+.purchase-review-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 2px 0 14px;
+}
+.purchase-review-summary > div {
+  display: grid;
+  gap: 2px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-alt);
+}
+.purchase-review-summary strong { font-size: 18px; color: var(--text); }
+.purchase-review-summary span { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
+.purchase-review-table { min-width: 850px; }
+.purchase-review-table th,
+.purchase-review-table td { text-align: left; vertical-align: middle; }
+.purchase-review-table th:nth-child(2),
+.purchase-review-table td:nth-child(2) { text-align: right; width: 145px; }
+.purchase-material-edit { min-width: 280px; }
+.purchase-material-edit input { min-width: 250px; }
+.purchase-material-lf { width: 120px; min-width: 110px; text-align: right; }
+.purchase-source-name { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.35; }
+.purchase-breakdown-cell { min-width: 280px; max-width: 520px; white-space: normal; line-height: 1.45; color: #475467; }
+.purchase-save-row { justify-content: flex-end; }
+.purchasing-table { min-width: 1250px; }
+.purchase-reference-cell { min-width: 150px; }
+.purchase-reference-cell strong { display: block; }
+
+@media (max-width: 720px) {
+  .purchase-review-summary { grid-template-columns: 1fr; }
+  .purchase-save-row { align-items: stretch; flex-direction: column-reverse; }
+  .purchase-save-row .button { width: 100%; }
+}
+.purchasing-table td:nth-child(2) { text-align: left; }
+.purchasing-table td:nth-child(3),
+.purchasing-table td:nth-child(4),
+.purchasing-table td:nth-child(5) { text-align: right; }

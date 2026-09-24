@@ -1,6 +1,28 @@
-# EWP Material Forecast — V0.16
+# EWP Material Forecast — V0.17
 
 **Developed by Samuel Chung @ Griff**
+
+## V0.17 changes
+
+V0.17 separates inventory maintenance from purchasing intake and adds a local Excel PO importer based on the Griff mill-PO format.
+
+- Splits the former **Inventory & Purchasing** page into separate **Inventory** and **Purchasing** tabs.
+- Keeps **Inventory** focused on Spruce On Hand, lead times, committed demand, Multi forecast, SFD buffer, incoming totals, Stock Owed and projected balance.
+- Renames **+ Track Material** to **+ Add to Inventory**. The button is disabled when nothing is entered or when the selected material is already present in Stock Position; an existing material shows **Already Added**.
+- Adds a Purchasing workflow similar to Add Project: **Upload PO Excel → review PO details/materials → confirm**.
+- Reads the sample Griff PO structure locally in the browser, including cached Excel formula values for **Description** and **Lineal**. The original workbook is not uploaded.
+- Detects the PO number from the workbook when populated, otherwise falls back to filenames such as `PO#2609-P77940.xlsx` → `2609-P77940`.
+- Reads PO date, material description, packages, length, pieces and Lineal footage; repeated length rows are aggregated into one incoming LF total per material while the underlying length/package detail is retained.
+- Normalizes Griff PO shorthand **ML → LVL** and **TS → LSL** before matching/adding material names. Other descriptions are left unchanged apart from whitespace/`x` cleanup.
+- Requires the user to enter **Expected Arrival** before confirming the PO; the PO date from the workbook is treated as the PO/order date, not an assumed arrival date.
+- Prevents accidental duplicate PO footage. If the same PO # is uploaded again, the UI warns the user and reconciles the existing PO while preserving already received quantities.
+- Keeps manual/transfer incoming entry on the Purchasing tab for material that does not come from an Excel PO.
+- Retains imported PO length/package detail in Supabase JSON so future purchasing UI can become more detailed without re-importing the original workbook.
+- Adds `purchase_orders`, links imported `incoming_orders` rows to the PO header, and includes the new table in authenticated RLS and Realtime sync.
+
+### Required Supabase change for V0.17
+
+Run **`supabase_v0_17.sql` before deploying the V0.17 frontend**. The script is idempotent and includes the V0.16 planning/inventory additions as well, so it is safe if V0.16 has already been migrated and can also bring a V0.15 database forward in one step.
 
 ## V0.16 changes
 
@@ -18,7 +40,7 @@ V0.16 expands the V0.15 project forecast into the inventory / purchasing workflo
 
 ### Required Supabase change for V0.16
 
-Run **`supabase_v0_16.sql` before deploying the V0.16 frontend**. It adds the project/package planning columns, archival flags, the `inventory_materials` and `incoming_orders` tables, authenticated-user RLS policies, and Realtime publication for the new tables. The migration is designed to preserve existing project, material and delivery data.
+The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.17 package, run **`supabase_v0_17.sql` instead**; it includes these V0.16 schema additions plus the new PO schema.
 
 ## V0.15 changes
 
@@ -128,7 +150,7 @@ V0.9 adds Supabase email/password authentication to the shared-team V0.7 applica
 - **GitHub Pages** hosts the web app.
 - **Supabase Auth** verifies team users.
 - **Supabase Postgres / Data API** stores shared Project / Level / Material / Delivery / Inventory / Incoming Material data.
-- EWP PDFs are parsed **locally in the user's browser**. The original PDF is not uploaded by this app.
+- EWP PDFs and PO Excel workbooks are parsed **locally in the user's browser**. The original PDF / workbook is not uploaded by this app.
 - Only the structured information extracted/entered by the user is sent to Supabase.
 
 ## Important transition state
@@ -153,7 +175,7 @@ Do not enable RLS before the V0.9 login test unless the required policies are cr
 - Multi-level projects collapsed by default.
 - Compact matrix cards, sticky project headers, frozen material column and top horizontal scrollbar.
 - 6-week Multi delivery/material forecast plus longer-term monthly outstanding-material forecast.
-- Inventory / purchasing view with SFD buffer, committed Spruce demand, incoming material and Stock Owed.
+- Separate Inventory and Purchasing views with SFD buffer, committed Spruce demand, Excel PO import, incoming material and Stock Owed.
 - V0.5 local-browser data migration.
 - CSV export tools.
 
@@ -178,14 +200,15 @@ Put these files directly in the repository root:
 - `db.mjs`
 - `realtime.mjs`
 - `config.mjs`
-- `supabase_v0_16.sql` (migration reference; run in Supabase SQL Editor before deployment)
+- `purchase_parser.mjs`
+- `supabase_v0_17.sql` (migration reference; run in Supabase SQL Editor before deployment)
 - `.nojekyll`
 - `.gitignore`
 - `README.md`
 
 Commit and push through GitHub Desktop. GitHub Pages will redeploy from `main` / `/(root)`.
 
-Do not commit real customer PDFs, exported CSV files, JSON backups, passwords, or Supabase secret keys.
+Do not commit real customer PDFs, PO Excel files, exported CSV files, JSON backups, passwords, or Supabase secret keys.
 
 
 ## V0.9 hotfix
@@ -209,7 +232,7 @@ do $$
 declare
   t text;
 begin
-  foreach t in array array['projects','levels','materials','deliveries','inventory_materials','incoming_orders','activity_log']
+  foreach t in array array['projects','levels','materials','deliveries','inventory_materials','purchase_orders','incoming_orders','activity_log']
   loop
     if not exists (
       select 1

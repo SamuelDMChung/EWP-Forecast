@@ -1,16 +1,18 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
+import { parsePurchaseWorkbook, normalizePoMaterialDescription } from "./purchase_parser.mjs";
 import { loadCloudRows, loadActivityRows, insertRows, updateRows, deleteRows, logActivity } from "./db.mjs";
 import { restoreSession, signInWithPassword, signOut, getCurrentUser, getLastEmail } from "./auth.mjs";
 import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs";
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 const EPSILON = 0.0001;
 const HISTORY_PAGE_SIZE = 100;
 
-let state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], incomingOrders: [] };
+let state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], purchaseOrders: [], incomingOrders: [] };
 let draft = null;
+let purchaseDraft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
 let activeEditProject = null;
@@ -197,6 +199,7 @@ function migrateLegacyState(parsed) {
       }))
     })),
     inventoryMaterials: [],
+    purchaseOrders: [],
     incomingOrders: []
   };
 }
@@ -318,14 +321,28 @@ function mapCloudRows(rows) {
     version: Number(row.version || 1)
   }));
 
+  const purchaseOrders = (rows.purchaseOrders || []).map(row => ({
+    id: row.id,
+    poNumber: row.po_number || "",
+    orderDate: row.order_date || "",
+    expectedDate: row.expected_date || "",
+    sourceFileName: row.source_file_name || "",
+    note: row.note || "",
+    createdAt: row.created_at || "",
+    updatedAt: row.updated_at || "",
+    version: Number(row.version || 1)
+  }));
+
   const incomingOrders = (rows.incomingOrders || []).map(row => ({
     id: row.id,
+    purchaseOrderId: row.purchase_order_id || "",
     material: row.material_name || "",
     quantityLf: Number(row.quantity_lf || 0),
     receivedLf: Number(row.received_lf || 0),
     expectedDate: row.expected_date || "",
     reference: row.reference || "",
     note: row.note || "",
+    lengthBreakdown: Array.isArray(row.length_breakdown) ? row.length_breakdown : [],
     createdAt: row.created_at || "",
     updatedAt: row.updated_at || "",
     version: Number(row.version || 1)
@@ -334,7 +351,8 @@ function mapCloudRows(rows) {
   const projects = [...projectMap.values()];
   projects.forEach(project => project.levels.sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name, undefined, { numeric: true })));
   inventoryMaterials.sort((a, b) => a.material.localeCompare(b.material, undefined, { numeric: true }));
-  return { version: SCHEMA_VERSION, projects, inventoryMaterials, incomingOrders };
+  purchaseOrders.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  return { version: SCHEMA_VERSION, projects, inventoryMaterials, purchaseOrders, incomingOrders };
 }
 function hasOpenDialog() {
   return $("deliveryDialog")?.open || $("materialExclusionDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
@@ -1740,6 +1758,70 @@ function inventoryCalculation(materialName) {
   return { profile, onHand, leadTimeWeeks, ...demand, incomingOpen, incomingDue, needInLeadTime, stockOwed, availableNow, projectedBalance };
 }
 
+function purchaseOrderForId(id) {
+  return (state.purchaseOrders || []).find(order => order.id === id) || null;
+}
+
+function purchaseOrderForNumber(poNumber) {
+  const key = normalizeSpaces(poNumber || "").toLowerCase();
+  if (!key) return null;
+  return (state.purchaseOrders || []).find(order => normalizeSpaces(order.poNumber || "").toLowerCase() === key) || null;
+}
+
+function materialDimensionValues(materialName) {
+  const values = [];
+  const text = String(materialName || "");
+  const regex = /(\d+(?:\.\d+)?)(?:[-\s]+(\d+)\s*\/\s*(\d+))?\s*(?=["”]|\bx\b)/gi;
+  let match;
+  while ((match = regex.exec(text))) {
+    let value = Number(match[1]);
+    if (match[2] && match[3] && Number(match[3])) value += Number(match[2]) / Number(match[3]);
+    if (Number.isFinite(value)) values.push(Math.round(value * 10000) / 10000);
+  }
+  return values;
+}
+
+function materialMatchSignature(materialName) {
+  const normalized = normalizePoMaterialDescription(materialName).toUpperCase();
+  const tji = normalized.match(/\bTJI\s*(\d+)\b/);
+  const dims = materialDimensionValues(normalized);
+  if (tji && dims.length) return `TJI|${tji[1]}|${Math.max(...dims)}`;
+
+  const type = /\bLSL\b/.test(normalized) ? "LSL" : /\bLVL\b/.test(normalized) ? "LVL" : "";
+  if (type && dims.length >= 2) {
+    const sorted = [...dims].sort((a, b) => a - b);
+    const grade = normalized.match(/\b(?:\d+(?:\.\d+)?E|SSS)\b/)?.[0] || "";
+    return `${type}|${sorted[0]}|${sorted[sorted.length - 1]}|${grade}`;
+  }
+  return "";
+}
+
+function canonicalPurchaseMaterialName(materialName) {
+  const normalized = normalizePoMaterialDescription(materialName);
+  const key = normalizeMaterialKey(normalized);
+  const known = allKnownMaterialNames();
+  const exact = known.find(name => normalizeMaterialKey(normalizePoMaterialDescription(name)) === key);
+  if (exact) return exact;
+  const signature = materialMatchSignature(normalized);
+  if (signature) {
+    const matches = known.filter(name => materialMatchSignature(name) === signature);
+    if (matches.length === 1) return matches[0];
+  }
+  return normalized;
+}
+
+function updateAddInventoryMaterialButton() {
+  const button = $("addInventoryMaterial");
+  const input = $("inventoryNewMaterial");
+  if (!button || !input) return;
+  const value = normalizeSpaces(input.value || "");
+  const key = normalizeMaterialKey(value);
+  const alreadyListed = Boolean(key) && allKnownMaterialNames().some(name => normalizeMaterialKey(name) === key);
+  button.disabled = !value || alreadyListed;
+  button.textContent = alreadyListed ? "Already Added" : "+ Add to Inventory";
+  button.title = alreadyListed ? "This material is already shown in Stock Position." : "Add this material to Stock Position.";
+}
+
 function renderInventory() {
   const wrap = $("inventoryWrap");
   const empty = $("inventoryEmpty");
@@ -1754,7 +1836,7 @@ function renderInventory() {
     wrap.classList.add("hidden");
     wrap.innerHTML = "";
     summary.innerHTML = "";
-    renderIncomingOrders();
+    updateAddInventoryMaterialButton();
     return;
   }
 
@@ -1790,34 +1872,364 @@ function renderInventory() {
   wrap.innerHTML = `<table class="inventory-table"><thead><tr><th class="material-col">Material</th><th>On Hand LF</th><th>Lead Time (wk)</th><th>Committed / Spruce</th><th>Multi Forecast</th><th>SFD Buffer</th><th>Open Incoming</th><th>Incoming by Lead Time</th><th>Available Now</th><th>Need in Lead Time</th><th>Stock Owed</th><th>Projected Balance</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.classList.remove("hidden");
   empty.classList.add("hidden");
-  renderIncomingOrders();
+  updateAddInventoryMaterialButton();
+}
+
+function formatLengthBreakdown(order) {
+  const breakdown = Array.isArray(order?.lengthBreakdown) ? order.lengthBreakdown : [];
+  if (!breakdown.length) return "—";
+  return breakdown.map(item => {
+    const length = Number(item.lengthFt || 0) > 0 ? `${formatNumber(item.lengthFt)}'` : "Length ?";
+    const pkg = Number(item.packages || 0) > 0 ? `${formatNumber(item.packages)} pkg` : "";
+    const pcs = Number(item.pieces || 0) > 0 ? `${formatNumber(item.pieces)} pcs` : "";
+    const lf = Number(item.linealLf || 0) > 0 ? `${formatNumber(item.linealLf)} LF` : "";
+    return [length, pkg, pcs, lf].filter(Boolean).join(" · ");
+  }).join(" | ");
 }
 
 function renderIncomingOrders() {
   const wrap = $("incomingOrdersWrap");
   const empty = $("incomingOrdersEmpty");
+  const summary = $("purchasingSummary");
   if (!wrap || !empty) return;
-  const orders = (state.incomingOrders || []).filter(order => incomingRemaining(order) > EPSILON).sort((a, b) => (a.expectedDate || "9999-12-31").localeCompare(b.expectedDate || "9999-12-31"));
+  const orders = (state.incomingOrders || []).filter(order => incomingRemaining(order) > EPSILON).sort((a, b) => {
+    const dateCompare = (a.expectedDate || "9999-12-31").localeCompare(b.expectedDate || "9999-12-31");
+    if (dateCompare) return dateCompare;
+    return (a.reference || "").localeCompare(b.reference || "", undefined, { numeric: true });
+  });
+
+  const openLf = orders.reduce((sum, order) => sum + incomingRemaining(order), 0);
+  const poIds = new Set(orders.map(order => order.purchaseOrderId).filter(Boolean));
+  const manualCount = orders.filter(order => !order.purchaseOrderId).length;
+  if (summary) summary.innerHTML = `
+    <div class="summary-metric"><span>Open PO Files</span><strong>${poIds.size}</strong></div>
+    <div class="summary-metric"><span>Open Incoming</span><strong>${formatNumber(openLf)} LF</strong></div>
+    <div class="summary-metric"><span>Manual / Transfer Lines</span><strong>${manualCount}</strong></div>`;
+
   if (!orders.length) {
     empty.classList.remove("hidden");
     wrap.classList.add("hidden");
     wrap.innerHTML = "";
     return;
   }
-  const rows = orders.map(order => `<tr data-order-id="${escapeHtml(order.id)}">
-    <td class="incoming-material-cell">${escapeHtml(order.material)}</td>
-    <td>${formatNumber(order.quantityLf)}</td>
-    <td>${formatNumber(order.receivedLf)}</td>
-    <td><strong>${formatNumber(incomingRemaining(order))}</strong></td>
-    <td>${escapeHtml(order.expectedDate ? formatDate(order.expectedDate) : "No date")}</td>
-    <td>${escapeHtml(order.reference || "—")}</td>
-    <td class="incoming-note-cell">${escapeHtml(order.note || "—")}</td>
-    <td><button type="button" class="mini-button receive-incoming">Receive Remaining</button></td>
-    <td><button type="button" class="mini-button delete-incoming danger-text">Delete</button></td>
-  </tr>`).join("");
-  wrap.innerHTML = `<table class="incoming-table"><thead><tr><th>Material</th><th>Ordered LF</th><th>Received LF</th><th>Open LF</th><th>Expected</th><th>PO / Ref</th><th>Note</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+
+  const rows = orders.map(order => {
+    const po = order.purchaseOrderId ? purchaseOrderForId(order.purchaseOrderId) : null;
+    const reference = po?.poNumber || order.reference || "Manual";
+    const source = po?.sourceFileName ? `<span class="cell-subnote">${escapeHtml(po.sourceFileName)}</span>` : (!order.purchaseOrderId ? `<span class="cell-subnote">manual / transfer</span>` : "");
+    return `<tr data-order-id="${escapeHtml(order.id)}">
+      <td class="purchase-reference-cell"><strong>${escapeHtml(reference)}</strong>${source}</td>
+      <td class="incoming-material-cell">${escapeHtml(order.material)}</td>
+      <td>${formatNumber(order.quantityLf)}</td>
+      <td>${formatNumber(order.receivedLf)}</td>
+      <td><strong>${formatNumber(incomingRemaining(order))}</strong></td>
+      <td>${escapeHtml(order.expectedDate ? formatDate(order.expectedDate) : "No date")}</td>
+      <td class="purchase-breakdown-cell">${escapeHtml(formatLengthBreakdown(order))}</td>
+      <td class="incoming-note-cell">${escapeHtml(order.note || po?.note || "—")}</td>
+      <td><button type="button" class="mini-button receive-incoming">Receive Remaining</button></td>
+      <td><button type="button" class="mini-button delete-incoming danger-text">Delete Open</button></td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table class="incoming-table purchasing-table"><thead><tr><th>PO / Ref</th><th>Material</th><th>Ordered LF</th><th>Received LF</th><th>Open LF</th><th>Expected</th><th>Length / Package Detail</th><th>Note</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
   wrap.classList.remove("hidden");
   empty.classList.add("hidden");
+}
+
+function renderPurchasing() {
+  renderIncomingOrders();
+  if (purchaseDraft) renderPurchaseDraft();
+  else updatePurchaseDuplicateNotice();
+}
+
+function syncPurchaseDraftFromInputs() {
+  if (!purchaseDraft) return;
+  purchaseDraft.poNumber = normalizeSpaces($("purchasePoNumber")?.value || "").toUpperCase();
+  purchaseDraft.orderDate = $("purchaseOrderDate")?.value || "";
+  purchaseDraft.expectedDate = $("purchaseExpectedDate")?.value || "";
+  purchaseDraft.note = normalizeSpaces($("purchaseNote")?.value || "");
+}
+
+function updatePurchaseDuplicateNotice() {
+  const notice = $("purchaseDuplicateNotice");
+  const saveButton = $("savePurchaseOrder");
+  if (!notice) return;
+  const poNumber = normalizeSpaces($("purchasePoNumber")?.value || purchaseDraft?.poNumber || "").toUpperCase();
+  const existing = purchaseOrderForNumber(poNumber);
+  notice.classList.toggle("hidden", !existing);
+  notice.textContent = existing ? `PO ${existing.poNumber} already exists. Confirming this import will reconcile the existing PO instead of adding the footage twice.` : "";
+  if (saveButton) saveButton.textContent = existing ? "Update Existing PO" : "Add Purchase Order";
+}
+
+function clearPurchaseValidation() {
+  const message = $("purchaseValidationMessage");
+  if (!message) return;
+  message.classList.add("hidden");
+  message.textContent = "";
+}
+
+function showPurchaseValidation(message) {
+  const el = $("purchaseValidationMessage");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove("hidden");
+}
+
+function renderPurchaseDraft() {
+  if (!purchaseDraft) return;
+  const card = $("purchaseReviewCard");
+  const wrap = $("purchaseReviewWrap");
+  const summary = $("purchaseReviewSummary");
+  if (!card || !wrap || !summary) return;
+  card.classList.remove("hidden");
+
+  const validItems = (purchaseDraft.items || []).filter(item => normalizeSpaces(item.material) && Number(item.quantityLf || 0) > EPSILON);
+  const totalLf = validItems.reduce((sum, item) => sum + Number(item.quantityLf || 0), 0);
+  const sourceRows = validItems.reduce((sum, item) => sum + (Array.isArray(item.breakdown) ? item.breakdown.length : 0), 0);
+  const detailSummary = Number(purchaseDraft.totalPackages || 0) > 0
+    ? `${formatNumber(purchaseDraft.totalPackages)} pkg${Number(purchaseDraft.totalPieces || 0) > 0 ? ` · ${formatNumber(purchaseDraft.totalPieces)} pcs` : ""}`
+    : `${sourceRows} rows`;
+  summary.innerHTML = `
+    <div><strong>${validItems.length}</strong><span>materials</span></div>
+    <div><strong>${formatNumber(totalLf)} LF</strong><span>incoming</span></div>
+    <div><strong>${detailSummary}</strong><span>PO detail retained</span></div>`;
+
+  const rows = (purchaseDraft.items || []).map((item, index) => {
+    const raw = (item.rawDescriptions || []).join(" / ");
+    const normalizedSource = raw && normalizeMaterialKey(raw) !== normalizeMaterialKey(item.material)
+      ? `<span class="purchase-source-name">PO: ${escapeHtml(raw)}</span>` : "";
+    const detail = Array.isArray(item.breakdown) && item.breakdown.length
+      ? item.breakdown.map(part => [
+          Number(part.lengthFt || 0) > 0 ? `${formatNumber(part.lengthFt)}'` : "",
+          Number(part.packages || 0) > 0 ? `${formatNumber(part.packages)} pkg` : "",
+          Number(part.pieces || 0) > 0 ? `${formatNumber(part.pieces)} pcs` : "",
+          Number(part.linealLf || 0) > 0 ? `${formatNumber(part.linealLf)} LF` : ""
+        ].filter(Boolean).join(" · ")).join(" | ")
+      : "Manual item";
+    return `<tr data-purchase-index="${index}">
+      <td class="purchase-material-edit"><input class="purchase-material-name" list="inventoryMaterialOptions" value="${escapeHtml(item.material)}" autocomplete="off" />${normalizedSource}</td>
+      <td><input class="purchase-material-lf" type="number" min="0" step="0.01" value="${Number(item.quantityLf || 0)}" /></td>
+      <td class="purchase-breakdown-cell">${escapeHtml(detail)}</td>
+      <td><button type="button" class="mini-button remove-purchase-material danger-text">Remove</button></td>
+    </tr>`;
+  }).join("");
+  wrap.innerHTML = `<table class="purchase-review-table"><thead><tr><th>Material</th><th>Incoming LF</th><th>PO Length / Package Detail</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+  clearPurchaseValidation();
+  updatePurchaseDuplicateNotice();
+}
+
+function resetPurchaseDraft() {
+  purchaseDraft = null;
+  $("poFile").value = "";
+  $("purchasePoNumber").value = "";
+  $("purchaseOrderDate").value = "";
+  $("purchaseExpectedDate").value = "";
+  $("purchaseSourceFile").value = "";
+  $("purchaseNote").value = "";
+  $("purchaseReviewCard").classList.add("hidden");
+  $("purchaseReviewWrap").innerHTML = "";
+  $("purchaseReviewSummary").innerHTML = "";
+  $("purchaseParseStatus").className = "status muted";
+  $("purchaseParseStatus").textContent = "No Excel file selected.";
+  clearPurchaseValidation();
+  updatePurchaseDuplicateNotice();
+}
+
+async function handlePurchaseWorkbook(file) {
+  const status = $("purchaseParseStatus");
+  status.className = "status muted";
+  status.textContent = `Reading ${file.name}…`;
+  try {
+    const parsed = await parsePurchaseWorkbook(file);
+    const items = parsed.items.map(item => ({
+      id: uid(),
+      material: canonicalPurchaseMaterialName(item.material),
+      quantityLf: Number(item.quantityLf || 0),
+      rawDescriptions: item.rawDescriptions || [],
+      breakdown: item.breakdown || []
+    }));
+    purchaseDraft = {
+      sourceFileName: file.name,
+      poNumber: parsed.poNumber || "",
+      poNumberSource: parsed.poNumberSource || "",
+      orderDate: parsed.orderDate || "",
+      expectedDate: "",
+      note: "",
+      customer: parsed.customer || "",
+      totalPackages: Number(parsed.totalPackages || 0),
+      totalPieces: Number(parsed.totalPieces || 0),
+      items
+    };
+    $("purchasePoNumber").value = purchaseDraft.poNumber;
+    $("purchaseOrderDate").value = purchaseDraft.orderDate;
+    $("purchaseExpectedDate").value = "";
+    $("purchaseSourceFile").value = file.name;
+    $("purchaseNote").value = "";
+    const aliases = parsed.items.filter(item => (item.rawDescriptions || []).some(raw => normalizeMaterialKey(raw) !== normalizeMaterialKey(item.material))).length;
+    status.className = "status success";
+    status.textContent = `Read ${parsed.items.length} material${parsed.items.length === 1 ? "" : "s"}, ${formatNumber(parsed.totalLf)} LF${parsed.poNumber ? ` · PO ${parsed.poNumber}${parsed.poNumberSource === "filename" ? " from filename" : ""}` : ""}.${aliases ? ` ${aliases} material name${aliases === 1 ? " was" : "s were"} normalized using PO aliases.` : ""}`;
+    renderPurchaseDraft();
+  } catch (error) {
+    console.error(error);
+    purchaseDraft = null;
+    $("purchaseReviewCard").classList.add("hidden");
+    status.className = "status error";
+    status.textContent = error.message || "Could not read this PO workbook.";
+  }
+}
+
+function syncPurchaseItemsFromTable() {
+  if (!purchaseDraft) return;
+  document.querySelectorAll("#purchaseReviewWrap tr[data-purchase-index]").forEach(row => {
+    const index = Number(row.dataset.purchaseIndex);
+    const item = purchaseDraft.items[index];
+    if (!item) return;
+    item.material = normalizeSpaces(row.querySelector(".purchase-material-name")?.value || "");
+    item.quantityLf = Number(row.querySelector(".purchase-material-lf")?.value || 0);
+  });
+}
+
+function validPurchaseDraftItems() {
+  return (purchaseDraft?.items || []).filter(item => normalizeSpaces(item.material) && Number.isFinite(Number(item.quantityLf)) && Number(item.quantityLf) > EPSILON);
+}
+
+async function persistPurchaseOrderDraft() {
+  if (!purchaseDraft) return alert("Upload a PO Excel file first.");
+  syncPurchaseItemsFromTable();
+  syncPurchaseDraftFromInputs();
+  clearPurchaseValidation();
+
+  if (!purchaseDraft.poNumber) return showPurchaseValidation("Enter the PO # before confirming.");
+  if (!purchaseDraft.expectedDate) return showPurchaseValidation("Enter the expected arrival date before confirming.");
+  const items = validPurchaseDraftItems();
+  if (!items.length) return showPurchaseValidation("Keep at least one material with incoming footage greater than 0 LF.");
+  if (items.length !== purchaseDraft.items.length) return showPurchaseValidation("Every material row needs a material name and incoming footage greater than 0 LF, or remove the row.");
+  const materialKeys = items.map(item => normalizeMaterialKey(canonicalPurchaseMaterialName(item.material)));
+  if (new Set(materialKeys).size !== materialKeys.length) return showPurchaseValidation("The same material appears more than once. Combine its footage into one row before confirming.");
+
+  await syncFromCloud({ silent: true });
+  const existing = purchaseOrderForNumber(purchaseDraft.poNumber);
+  const totalLf = items.reduce((sum, item) => sum + Number(item.quantityLf || 0), 0);
+  const now = new Date().toISOString();
+
+  if (existing) {
+    const existingItems = (state.incomingOrders || []).filter(order => order.purchaseOrderId === existing.id);
+    const message = `PO ${existing.poNumber} already exists.\n\nUpdate it to the reviewed ${items.length} material${items.length === 1 ? "" : "s"} / ${formatNumber(totalLf)} LF? Existing received quantities will be preserved.`;
+    if (!confirm(message)) return;
+
+    const usedIds = new Set();
+    let added = 0;
+    let updated = 0;
+    let closed = 0;
+    for (const item of items) {
+      const materialName = canonicalPurchaseMaterialName(item.material);
+      const match = existingItems.find(order => !usedIds.has(order.id) && normalizeMaterialKey(order.material) === normalizeMaterialKey(materialName));
+      if (match) {
+        usedIds.add(match.id);
+        if (Number(item.quantityLf) + EPSILON < Number(match.receivedLf || 0)) {
+          throw new Error(`${materialName} has already received ${formatNumber(match.receivedLf)} LF, so the PO cannot be revised down to ${formatNumber(item.quantityLf)} LF.`);
+        }
+        const changed = await updateRows("incoming_orders", { id: `eq.${match.id}`, version: `eq.${match.version}` }, {
+          material_name: materialName,
+          quantity_lf: Number(item.quantityLf),
+          expected_date: purchaseDraft.expectedDate,
+          reference: purchaseDraft.poNumber,
+          note: purchaseDraft.note || null,
+          length_breakdown: item.breakdown || [],
+          updated_at: now,
+          version: match.version + 1
+        });
+        if (!changed?.length) throw new Error(`${materialName} changed while the PO revision was being saved. Refresh and try again.`);
+        updated += 1;
+      } else {
+        await insertRows("incoming_orders", {
+          id: uid(),
+          purchase_order_id: existing.id,
+          material_name: materialName,
+          quantity_lf: Number(item.quantityLf),
+          received_lf: 0,
+          expected_date: purchaseDraft.expectedDate,
+          reference: purchaseDraft.poNumber,
+          note: purchaseDraft.note || null,
+          length_breakdown: item.breakdown || [],
+          version: 1
+        });
+        added += 1;
+      }
+    }
+
+    for (const oldItem of existingItems) {
+      if (usedIds.has(oldItem.id)) continue;
+      if (Number(oldItem.receivedLf || 0) > EPSILON) {
+        const changed = await updateRows("incoming_orders", { id: `eq.${oldItem.id}`, version: `eq.${oldItem.version}` }, {
+          quantity_lf: Number(oldItem.receivedLf || 0),
+          expected_date: purchaseDraft.expectedDate,
+          note: [oldItem.note, "Removed from revised PO after receipt"].filter(Boolean).join(" · "),
+          updated_at: now,
+          version: oldItem.version + 1
+        });
+        if (!changed?.length) throw new Error(`${oldItem.material} changed while the PO revision was being saved.`);
+      } else {
+        const deleted = await deleteRows("incoming_orders", { id: `eq.${oldItem.id}`, version: `eq.${oldItem.version}` });
+        if (!deleted?.length) throw new Error(`${oldItem.material} changed while the PO revision was being saved.`);
+      }
+      closed += 1;
+    }
+
+    const header = await updateRows("purchase_orders", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, {
+      po_number: purchaseDraft.poNumber,
+      order_date: purchaseDraft.orderDate || null,
+      expected_date: purchaseDraft.expectedDate,
+      source_file_name: purchaseDraft.sourceFileName || null,
+      note: purchaseDraft.note || null,
+      updated_at: now,
+      version: existing.version + 1
+    });
+    if (!header?.length) throw new Error("This PO was changed by another user while the revision was being saved.");
+    await recordActivity("purchase_order", existing.id, "update_purchase_order", {
+      po_number: purchaseDraft.poNumber,
+      total_lf: totalLf,
+      expected_date: purchaseDraft.expectedDate,
+      source_file_name: purchaseDraft.sourceFileName,
+      items_added: added,
+      items_updated: updated,
+      items_removed_or_closed: closed
+    });
+  } else {
+    if (!confirm(`Add PO ${purchaseDraft.poNumber} with ${items.length} material${items.length === 1 ? "" : "s"} / ${formatNumber(totalLf)} LF incoming?`)) return;
+    const purchaseOrderId = uid();
+    await insertRows("purchase_orders", {
+      id: purchaseOrderId,
+      po_number: purchaseDraft.poNumber,
+      order_date: purchaseDraft.orderDate || null,
+      expected_date: purchaseDraft.expectedDate,
+      source_file_name: purchaseDraft.sourceFileName || null,
+      note: purchaseDraft.note || null,
+      version: 1
+    });
+    await insertRows("incoming_orders", items.map(item => ({
+      id: uid(),
+      purchase_order_id: purchaseOrderId,
+      material_name: canonicalPurchaseMaterialName(item.material),
+      quantity_lf: Number(item.quantityLf),
+      received_lf: 0,
+      expected_date: purchaseDraft.expectedDate,
+      reference: purchaseDraft.poNumber,
+      note: purchaseDraft.note || null,
+      length_breakdown: item.breakdown || [],
+      version: 1
+    })));
+    await recordActivity("purchase_order", purchaseOrderId, "import_purchase_order", {
+      po_number: purchaseDraft.poNumber,
+      material_count: items.length,
+      total_lf: totalLf,
+      expected_date: purchaseDraft.expectedDate,
+      source_file_name: purchaseDraft.sourceFileName
+    });
+  }
+
+  resetPurchaseDraft();
+  await syncFromCloud({ silent: true });
+  setTab("purchasing");
 }
 
 function formatDateTime(value) {
@@ -1846,6 +2258,8 @@ const ACTIVITY_LABELS = {
   delete_project: "Project deleted",
   create_inventory: "Inventory material added",
   update_inventory: "Inventory updated",
+  import_purchase_order: "Purchase order imported",
+  update_purchase_order: "Purchase order updated",
   add_incoming: "Incoming material added",
   receive_incoming: "Incoming material received",
   delete_incoming: "Incoming material deleted"
@@ -1907,6 +2321,14 @@ function activityDetailText(row) {
     d.material_name || "Material",
     d.to_on_hand_lf !== undefined ? `On Hand ${formatNumber(d.from_on_hand_lf || 0)} → ${formatNumber(d.to_on_hand_lf || 0)} LF` : `On Hand ${formatNumber(d.on_hand_lf || 0)} LF`,
     d.to_lead_time_weeks !== undefined ? `Lead time ${d.from_lead_time_weeks ?? 6} → ${d.to_lead_time_weeks} weeks` : `Lead time ${d.lead_time_weeks ?? 6} weeks`
+  ].filter(Boolean).join(" · ");
+  if (["import_purchase_order", "update_purchase_order"].includes(row.action)) return [
+    d.po_number ? `PO ${d.po_number}` : "Purchase order",
+    d.material_count !== undefined ? `${d.material_count} material${Number(d.material_count) === 1 ? "" : "s"}` : "",
+    d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF` : "",
+    d.expected_date ? `Expected ${formatDate(d.expected_date)}` : "",
+    d.items_added ? `${d.items_added} added` : "",
+    d.items_updated ? `${d.items_updated} updated` : ""
   ].filter(Boolean).join(" · ");
   if (row.action === "add_incoming") return [d.material_name, `${formatNumber(d.quantity_lf)} LF`, d.expected_date ? `Expected ${formatDate(d.expected_date)}` : "", d.reference ? `Ref: ${d.reference}` : ""].filter(Boolean).join(" · ");
   if (row.action === "receive_incoming") return [d.material_name, `${formatNumber(d.received_lf)} LF received`, d.reference ? `Ref: ${d.reference}` : ""].filter(Boolean).join(" · ");
@@ -2060,6 +2482,7 @@ function renderAll() {
   renderMatrix();
   renderForecast();
   renderInventory();
+  renderPurchasing();
   if (document.getElementById("history")?.classList.contains("active") && historyLoaded) renderHistory();
 }
 
@@ -2331,9 +2754,13 @@ async function saveInventoryRow(row) {
 
 async function addTrackedInventoryMaterial() {
   const materialName = normalizeSpaces($("inventoryNewMaterial")?.value || "");
-  if (!materialName) return alert("Enter a material to track.");
+  if (!materialName) return alert("Enter a material to add to inventory.");
   await syncFromCloud({ silent: true });
-  if (inventoryProfileFor(materialName)) return alert(`${materialName} is already tracked.`);
+  const key = normalizeMaterialKey(materialName);
+  if (allKnownMaterialNames().some(name => normalizeMaterialKey(name) === key)) {
+    updateAddInventoryMaterialButton();
+    return;
+  }
   const id = uid();
   await insertRows("inventory_materials", {
     id,
@@ -2433,10 +2860,20 @@ async function receiveIncomingOrder(orderId) {
 async function deleteIncomingOrder(orderId) {
   const order = (state.incomingOrders || []).find(item => item.id === orderId);
   if (!order) return;
-  if (!confirm(`Delete the open incoming record for ${order.material}?`)) return;
-  const deleted = await deleteRows("incoming_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` });
-  if (!deleted?.length) throw new Error("This incoming order was changed by another user. Refresh and try again.");
-  await recordActivity("incoming", order.id, "delete_incoming", { material_name: order.material, open_lf: incomingRemaining(order), reference: order.reference || "" });
+  const openLf = incomingRemaining(order);
+  if (!confirm(`Remove the remaining ${formatNumber(openLf)} LF incoming for ${order.material}?${Number(order.receivedLf || 0) > EPSILON ? "\n\nAlready received footage will be kept in the PO record." : ""}`)) return;
+  if (Number(order.receivedLf || 0) > EPSILON) {
+    const changed = await updateRows("incoming_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` }, {
+      quantity_lf: Number(order.receivedLf || 0),
+      updated_at: new Date().toISOString(),
+      version: order.version + 1
+    });
+    if (!changed?.length) throw new Error("This incoming order was changed by another user. Refresh and try again.");
+  } else {
+    const deleted = await deleteRows("incoming_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` });
+    if (!deleted?.length) throw new Error("This incoming order was changed by another user. Refresh and try again.");
+  }
+  await recordActivity("incoming", order.id, "delete_incoming", { material_name: order.material, open_lf: openLf, reference: order.reference || "" });
   await syncFromCloud({ silent: true });
 }
 
@@ -2496,7 +2933,26 @@ function exportInventoryCsv() {
     const c = inventoryCalculation(materialName);
     rows.push([materialName, c.onHand, c.leadTimeWeeks, c.committed, c.multiForecast, c.sfdBuffer, c.incomingOpen, c.incomingDue, c.availableNow, c.needInLeadTime, c.stockOwed, c.projectedBalance]);
   }
-  downloadText("ewp-inventory-purchasing.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
+  downloadText("ewp-inventory.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
+}
+
+function exportPurchasingCsv() {
+  const rows = [["PO / Reference", "Source File", "Material", "Ordered LF", "Received LF", "Open LF", "Expected Date", "Length / Package Detail", "Note"]];
+  for (const order of (state.incomingOrders || []).filter(item => incomingRemaining(item) > EPSILON)) {
+    const po = order.purchaseOrderId ? purchaseOrderForId(order.purchaseOrderId) : null;
+    rows.push([
+      po?.poNumber || order.reference || "Manual",
+      po?.sourceFileName || "",
+      order.material,
+      order.quantityLf,
+      order.receivedLf,
+      incomingRemaining(order),
+      order.expectedDate,
+      formatLengthBreakdown(order),
+      order.note || po?.note || ""
+    ]);
+  }
+  downloadText("ewp-open-purchase-orders.csv", rows.map(row => row.map(csvEscape).join(",")).join("\n"), "text/csv;charset=utf-8");
 }
 
 function cleanBackupState() {
@@ -2771,7 +3227,7 @@ function wireEvents() {
     await signOut();
     currentUserName = "";
     renderCurrentUser();
-    state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], incomingOrders: [] };
+    state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], purchaseOrders: [], incomingOrders: [] };
     renderAll();
     setCloudStatus("connecting", "Sign in required");
     const session = await openLoginDialog();
@@ -2787,6 +3243,76 @@ function wireEvents() {
   $("pdfFile").addEventListener("change", event => {
     const file = event.target.files?.[0];
     if (file) handlePdf(file);
+  });
+
+  const poFile = $("poFile");
+  poFile.addEventListener("change", event => {
+    const file = event.target.files?.[0];
+    if (file) handlePurchaseWorkbook(file);
+  });
+  const poDropZone = $("poDropZone");
+  ["dragenter", "dragover"].forEach(name => poDropZone.addEventListener(name, event => {
+    event.preventDefault();
+    poDropZone.classList.add("dragging");
+  }));
+  ["dragleave", "drop"].forEach(name => poDropZone.addEventListener(name, event => {
+    event.preventDefault();
+    poDropZone.classList.remove("dragging");
+  }));
+  poDropZone.addEventListener("drop", event => {
+    const file = [...(event.dataTransfer?.files || [])].find(item => /\.(xlsx|xls)$/i.test(item.name));
+    if (file) handlePurchaseWorkbook(file);
+  });
+  ["purchasePoNumber", "purchaseOrderDate", "purchaseExpectedDate", "purchaseNote"].forEach(id => {
+    $(id).addEventListener("input", () => {
+      syncPurchaseDraftFromInputs();
+      clearPurchaseValidation();
+      if (id === "purchasePoNumber") updatePurchaseDuplicateNotice();
+    });
+    $(id).addEventListener("change", () => {
+      syncPurchaseDraftFromInputs();
+      clearPurchaseValidation();
+      updatePurchaseDuplicateNotice();
+    });
+  });
+  $("purchaseReviewWrap").addEventListener("input", event => {
+    const row = event.target.closest("tr[data-purchase-index]");
+    if (!row || !purchaseDraft) return;
+    const index = Number(row.dataset.purchaseIndex);
+    const item = purchaseDraft.items[index];
+    if (!item) return;
+    if (event.target.matches(".purchase-material-name")) item.material = normalizeSpaces(event.target.value || "");
+    if (event.target.matches(".purchase-material-lf")) item.quantityLf = Number(event.target.value || 0);
+    clearPurchaseValidation();
+  });
+  $("purchaseReviewWrap").addEventListener("click", event => {
+    const button = event.target.closest(".remove-purchase-material");
+    if (!button || !purchaseDraft) return;
+    syncPurchaseItemsFromTable();
+    const row = button.closest("tr[data-purchase-index]");
+    purchaseDraft.items.splice(Number(row.dataset.purchaseIndex), 1);
+    renderPurchaseDraft();
+  });
+  $("addPurchaseMaterial").addEventListener("click", () => {
+    if (!purchaseDraft) return;
+    syncPurchaseItemsFromTable();
+    purchaseDraft.items.push({ id: uid(), material: "", quantityLf: 0, rawDescriptions: [], breakdown: [] });
+    renderPurchaseDraft();
+  });
+  $("clearPurchaseDraft").addEventListener("click", resetPurchaseDraft);
+  $("savePurchaseOrder").addEventListener("click", async () => {
+    const button = $("savePurchaseOrder");
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = "Saving…";
+    try { await persistPurchaseOrderDraft(); }
+    catch (error) { console.error(error); alert(error.message); await syncFromCloud({ silent: true }); }
+    finally {
+      button.disabled = false;
+      if (purchaseDraft) updatePurchaseDuplicateNotice();
+      else button.textContent = "Add Purchase Order";
+      if (purchaseDraft && button.textContent === "Saving…") button.textContent = original;
+    }
   });
 
   const dropZone = $("dropZone");
@@ -2936,6 +3462,7 @@ function wireEvents() {
   $("refreshCloud").addEventListener("click", () => syncFromCloud());
   $("refreshCloudForecast").addEventListener("click", () => syncFromCloud());
   $("refreshCloudInventory").addEventListener("click", () => syncFromCloud());
+  $("refreshCloudPurchasing").addEventListener("click", () => syncFromCloud());
 
   const matrixWrap = $("matrixWrap");
   const matrixTopScroll = $("matrixTopScroll");
@@ -3036,12 +3563,14 @@ function wireEvents() {
     catch (error) { console.error(error); alert(error.message); await syncFromCloud({ silent: true }); }
     finally { button.disabled = false; button.textContent = "Save"; }
   });
+  $("inventoryNewMaterial").addEventListener("input", updateAddInventoryMaterialButton);
+  $("inventoryNewMaterial").addEventListener("change", updateAddInventoryMaterialButton);
   $("addInventoryMaterial").addEventListener("click", async () => {
     const button = $("addInventoryMaterial");
     button.disabled = true;
     try { await addTrackedInventoryMaterial(); }
     catch (error) { console.error(error); alert(error.message); }
-    finally { button.disabled = false; }
+    finally { updateAddInventoryMaterialButton(); }
   });
   $("addIncomingOrder").addEventListener("click", async () => {
     const button = $("addIncomingOrder");
@@ -3084,6 +3613,7 @@ function wireEvents() {
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);
   $("exportInventoryCsv").addEventListener("click", exportInventoryCsv);
+  $("exportPurchasingCsv").addEventListener("click", exportPurchasingCsv);
   $("refreshHistory").addEventListener("click", () => loadAndRenderHistory());
   $("loadOlderHistory").addEventListener("click", async () => {
     const button = $("loadOlderHistory");

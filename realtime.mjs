@@ -30,7 +30,7 @@ export async function startRealtime({ onChange, onStatus } = {}) {
     await supabase.realtime.setAuth(token);
 
     channel = supabase.channel("ewp-material-forecast-shared-v09");
-    for (const table of ["projects", "levels", "materials", "deliveries", "inventory_materials", "incoming_orders", "activity_log"]) {
+    for (const table of ["projects", "levels", "materials", "deliveries", "inventory_materials", "purchase_orders", "incoming_orders", "activity_log"]) {
       channel.on(
         "postgres_changes",
         { event: "*", schema: "public", table },

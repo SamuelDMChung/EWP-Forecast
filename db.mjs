@@ -43,12 +43,13 @@ async function request(table, { method = "GET", params = {}, body, prefer = "", 
 }
 
 export async function loadCloudRows() {
-  const [projects, levels, materials, deliveries, inventoryMaterials, incomingOrders] = await Promise.all([
+  const [projects, levels, materials, deliveries, inventoryMaterials, purchaseOrders, incomingOrders] = await Promise.all([
     request("projects", { params: { select: "*", order: "created_at.asc" } }),
     request("levels", { params: { select: "*", order: "display_order.asc,created_at.asc" } }),
     request("materials", { params: { select: "*", order: "created_at.asc" } }),
     request("deliveries", { params: { select: "*", order: "delivered_at.asc,created_at.asc" } }),
     request("inventory_materials", { params: { select: "*", order: "material_name.asc" } }),
+    request("purchase_orders", { params: { select: "*", order: "created_at.desc" } }),
     request("incoming_orders", { params: { select: "*", order: "expected_date.asc,created_at.asc" } })
   ]);
   return {
@@ -57,6 +58,7 @@ export async function loadCloudRows() {
     materials: materials || [],
     deliveries: deliveries || [],
     inventoryMaterials: inventoryMaterials || [],
+    purchaseOrders: purchaseOrders || [],
     incomingOrders: incomingOrders || []
   };
 }

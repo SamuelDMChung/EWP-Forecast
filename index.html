@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.16 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.17 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -29,11 +29,13 @@
     <button class="tab active" data-tab="intake">Add Project</button>
     <button class="tab" data-tab="matrix">Projects &amp; Materials</button>
     <button class="tab" data-tab="forecast">Delivery Forecast</button>
-    <button class="tab" data-tab="inventory">Inventory &amp; Purchasing</button>
+    <button class="tab" data-tab="inventory">Inventory</button>
+    <button class="tab" data-tab="purchasing">Purchasing</button>
     <button class="tab" data-tab="history">Entry History</button>
   </nav>
 
   <main>
+    <datalist id="inventoryMaterialOptions"></datalist>
     <section id="intake" class="tab-panel active">
       <div class="grid two-column">
         <article class="card">
@@ -163,7 +165,7 @@
         <div class="section-heading-row">
           <div>
             <h3>Monthly Material Forecast</h3>
-            <p class="small-note">Outstanding dated quantities only. SFD quantities are handled separately as a purchasing buffer in Inventory &amp; Purchasing.</p>
+            <p class="small-note">Outstanding dated quantities only. SFD quantities are handled separately as a purchasing buffer in Inventory.</p>
           </div>
         </div>
         <div id="forecastEmpty" class="empty-state compact-empty">Add dated projects to see the monthly forecast.</div>
@@ -174,8 +176,8 @@
     <section id="inventory" class="tab-panel">
       <div class="toolbar">
         <div>
-          <h2>Inventory &amp; Purchasing</h2>
-          <p>Combine current Spruce stock, open incoming material, committed jobs, Multi forecasts and the SFD buffer to see what is owed.</p>
+          <h2>Inventory</h2>
+          <p>Maintain current Spruce stock and product lead times. Open purchase orders still flow into the calculations automatically.</p>
         </div>
         <div class="toolbar-actions">
           <button id="refreshCloudInventory" class="button secondary">Refresh</button>
@@ -189,34 +191,106 @@
         <div class="section-heading-row">
           <div>
             <h3>Stock Position</h3>
-            <p class="small-note">Stock Owed looks only through each product's lead-time window. Projected Balance looks across all outstanding demand and all open incoming material.</p>
+            <p class="small-note">Stock Owed looks through each product's lead-time window. Projected Balance includes all outstanding demand and all open incoming material.</p>
           </div>
         </div>
         <div class="inventory-add-material">
-          <input id="inventoryNewMaterial" list="inventoryMaterialOptions" placeholder="Add / track a material…" autocomplete="off" />
-          <button id="addInventoryMaterial" type="button" class="button secondary">+ Track Material</button>
+          <input id="inventoryNewMaterial" list="inventoryMaterialOptions" placeholder="Add a material to inventory…" autocomplete="off" />
+          <button id="addInventoryMaterial" type="button" class="button secondary" disabled>+ Add to Inventory</button>
         </div>
-        <div id="inventoryEmpty" class="empty-state compact-empty">Add a project or track an inventory material to begin.</div>
+        <div id="inventoryEmpty" class="empty-state compact-empty">Add a project or an inventory material to begin.</div>
         <div id="inventoryWrap" class="table-wrap hidden"></div>
+      </article>
+    </section>
+
+    <section id="purchasing" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Purchasing</h2>
+          <p>Import mill PO Excel files, review the extracted material footage, then add the order to incoming inventory.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshCloudPurchasing" class="button secondary">Refresh</button>
+          <button id="exportPurchasingCsv" class="button secondary">Export Open POs</button>
+        </div>
+      </div>
+
+      <div class="grid two-column purchase-intake-grid">
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="step">STEP 1</p>
+              <h2>Upload Purchase Order</h2>
+            </div>
+            <span class="privacy-pill">Excel parsed locally</span>
+          </div>
+          <label id="poDropZone" class="drop-zone" for="poFile">
+            <input id="poFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden />
+            <span class="drop-icon">XLS</span>
+            <strong>Drop a mill PO Excel file here</strong>
+            <span>or click to choose a file</span>
+          </label>
+          <div id="purchaseParseStatus" class="status muted">No Excel file selected.</div>
+          <p class="small-note">The workbook stays on this computer. The importer reads PO #, order date, material descriptions and Lineal footage. PO shorthand is normalized as <strong>ML → LVL</strong> and <strong>TS → LSL</strong>.</p>
+        </article>
+
+        <article class="card">
+          <p class="step">STEP 2</p>
+          <h2>PO Details</h2>
+          <div class="form-grid">
+            <label>PO #<input id="purchasePoNumber" autocomplete="off" placeholder="e.g. 2609-P77940" /></label>
+            <label>PO Date<input id="purchaseOrderDate" type="date" /></label>
+            <label>Expected Arrival<input id="purchaseExpectedDate" type="date" /></label>
+            <label>Source File<input id="purchaseSourceFile" readonly placeholder="Excel filename" /></label>
+            <label class="full">Note<input id="purchaseNote" autocomplete="off" placeholder="Optional purchasing note" /></label>
+          </div>
+          <div id="purchaseDuplicateNotice" class="form-validation warning hidden"></div>
+        </article>
+      </div>
+
+      <article id="purchaseReviewCard" class="card hidden purchase-review-card">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 3</p>
+            <h2>Review Extracted Materials</h2>
+          </div>
+          <button id="addPurchaseMaterial" class="button secondary" type="button">+ Add Material</button>
+        </div>
+        <div id="purchaseReviewSummary" class="purchase-review-summary"></div>
+        <div id="purchaseReviewWrap" class="table-wrap"></div>
+        <div id="purchaseValidationMessage" class="form-validation hidden" role="alert"></div>
+        <div class="save-row purchase-save-row">
+          <button id="clearPurchaseDraft" class="button secondary" type="button">Clear</button>
+          <button id="savePurchaseOrder" class="button primary large" type="button">Add Purchase Order</button>
+        </div>
       </article>
 
       <article class="card inventory-card">
         <div class="section-heading-row">
           <div>
-            <h3>Incoming Material</h3>
-            <p class="small-note">Record mill / transfer material that is already ordered. Receiving an order adds its remaining LF to On Hand.</p>
+            <h3>Manual / Transfer Incoming</h3>
+            <p class="small-note">For incoming material that does not come from a PO workbook.</p>
           </div>
         </div>
         <div class="incoming-form-grid">
           <label>Material<input id="incomingMaterial" list="inventoryMaterialOptions" placeholder="Material" autocomplete="off" /></label>
           <label>Quantity (LF)<input id="incomingLf" type="number" min="0" step="0.01" /></label>
           <label>Expected Date<input id="incomingDate" type="date" /></label>
-          <label>PO / Reference<input id="incomingReference" placeholder="Optional" /></label>
+          <label>Reference<input id="incomingReference" placeholder="Optional" /></label>
           <label class="incoming-note">Note<input id="incomingNote" placeholder="Optional" /></label>
           <button id="addIncomingOrder" type="button" class="button primary incoming-add">+ Add Incoming</button>
         </div>
-        <datalist id="inventoryMaterialOptions"></datalist>
-        <div id="incomingOrdersEmpty" class="empty-state compact-empty">No open incoming material.</div>
+      </article>
+
+      <article class="card inventory-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Open Purchase Orders &amp; Incoming</h3>
+            <p class="small-note">Receiving a line adds its remaining LF to On Hand. Imported PO length/package detail is retained for reference.</p>
+          </div>
+        </div>
+        <div id="purchasingSummary" class="inventory-summary"></div>
+        <div id="incomingOrdersEmpty" class="empty-state compact-empty">No open purchase orders or incoming material.</div>
         <div id="incomingOrdersWrap" class="table-wrap hidden"></div>
       </article>
     </section>
