@@ -5,7 +5,7 @@ import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const EPSILON = 0.0001;
 const HISTORY_PAGE_SIZE = 100;
 
@@ -298,7 +298,7 @@ function mapCloudRows(rows) {
 }
 
 function hasOpenDialog() {
-  return $("deliveryDialog")?.open || $("projectEditDialog")?.open;
+  return $("deliveryDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
 }
 
 async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
@@ -392,24 +392,35 @@ function addDaysIso(date, days) {
 }
 
 function applyProjectDateToDraft() {
-  if (!draft?.levels?.length) return;
+  if (!draft?.levels?.length) {
+    renderDeliveryPreview();
+    return;
+  }
   const projectDate = $("projectDate").value || "";
   draft.defaultEstimatedDeliveryDate = projectDate;
 
   if ($("applyDateAll").checked) {
-    draft.levels.forEach(level => { level.estimatedDeliveryDate = projectDate; });
+    draft.levels.forEach(level => {
+      level.estimatedDeliveryDate = projectDate;
+      level.dateSource = projectDate ? "auto" : "";
+    });
+    renderDeliveryPreview();
     return;
   }
 
   if ($("staggerWeekly").checked) {
     draft.levels.forEach((level, index) => {
       level.estimatedDeliveryDate = projectDate ? addDaysIso(projectDate, index * 7) : "";
+      level.dateSource = level.estimatedDeliveryDate ? "auto" : "";
     });
+    renderDeliveryPreview();
     return;
   }
 
   // The project date is always the starting/first-level date even when no bulk rule is selected.
   draft.levels[0].estimatedDeliveryDate = projectDate;
+  draft.levels[0].dateSource = projectDate ? "auto" : "";
+  renderDeliveryPreview();
 }
 
 function continueWeeklyScheduleFrom(levelIndex) {
@@ -417,7 +428,9 @@ function continueWeeklyScheduleFrom(levelIndex) {
   const anchor = draft.levels[levelIndex].estimatedDeliveryDate || "";
   for (let index = levelIndex + 1; index < draft.levels.length; index += 1) {
     draft.levels[index].estimatedDeliveryDate = anchor ? addDaysIso(anchor, (index - levelIndex) * 7) : "";
+    draft.levels[index].dateSource = draft.levels[index].estimatedDeliveryDate ? "auto" : "";
   }
+  renderDeliveryPreview();
 }
 
 function monthKey(date) { return date ? date.slice(0, 7) : ""; }
@@ -548,6 +561,7 @@ async function handlePdf(file) {
         id: uid(),
         name: level.name,
         estimatedDeliveryDate: "",
+        dateSource: "",
         materials: level.materials.map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
         filteredMaterials: (level.filteredMaterials || []).map(item => ({ id: uid(), material: item.material, requiredLf: item.requiredLf })),
         deliveries: []
@@ -573,7 +587,10 @@ async function handlePdf(file) {
 }
 
 function renderDraftLevels() {
-  if (!draft) return;
+  if (!draft) {
+    renderDeliveryPreview();
+    return;
+  }
   const wrap = $("levelEditor");
   wrap.innerHTML = draft.levels.map((level, levelIndex) => `
     <div class="level-card" data-level-index="${levelIndex}">
@@ -582,7 +599,10 @@ function renderDraftLevels() {
           <input class="level-name" data-level-index="${levelIndex}" value="${escapeHtml(level.name)}" />
         </label>
         <label>Estimated Delivery
-          <input class="level-date" data-level-index="${levelIndex}" type="date" value="${escapeHtml(level.estimatedDeliveryDate || "")}" />
+          <div class="date-field-wrap">
+            <input class="level-date" data-level-index="${levelIndex}" type="date" value="${escapeHtml(level.estimatedDeliveryDate || "")}" />
+            ${level.estimatedDeliveryDate ? `<span class="date-source-badge ${level.dateSource === "manual" ? "manual" : "auto"}">${level.dateSource === "manual" ? "Manual" : "Auto"}</span>` : ""}
+          </div>
         </label>
         <button class="button ghost remove-level" data-level-index="${levelIndex}" type="button">Remove Level</button>
       </div>
@@ -594,7 +614,7 @@ function renderDraftLevels() {
           <div class="filtered-item">
             <span>${escapeHtml(item.material)}</span>
             <strong>${formatNumber(item.requiredLf)} LF</strong>
-            <button type="button" class="mini-button restore-filtered" data-level-index="${levelIndex}" data-filtered-index="${filteredIndex}">Add</button>
+            <button type="button" class="mini-button restore-filtered" data-level-index="${levelIndex}" data-filtered-index="${filteredIndex}">Add to project</button>
           </div>`).join("")}
       </div>` : ""}
       <div class="material-list">
@@ -608,8 +628,35 @@ function renderDraftLevels() {
         <button class="button secondary add-material" data-level-index="${levelIndex}" type="button">+ Add Material</button>
       </div>
     </div>`).join("");
+  renderDeliveryPreview();
 }
 
+function renderDeliveryPreview() {
+  const preview = $("deliveryPreview");
+  if (!preview) return;
+  if (!draft?.levels?.length) {
+    preview.classList.add("hidden");
+    preview.innerHTML = "";
+    return;
+  }
+  const hasAnyDate = draft.levels.some(level => level.estimatedDeliveryDate);
+  if (!hasAnyDate) {
+    preview.classList.add("hidden");
+    preview.innerHTML = "";
+    return;
+  }
+  preview.innerHTML = `
+    <div class="delivery-preview-title">Delivery date preview</div>
+    <div class="delivery-preview-list">
+      ${draft.levels.map((level, index) => `
+        <div class="delivery-preview-row">
+          <span class="delivery-preview-level">${escapeHtml(level.name || `Level ${index + 1}`)}</span>
+          <span class="delivery-preview-date">${escapeHtml(formatDate(level.estimatedDeliveryDate))}</span>
+          ${level.estimatedDeliveryDate ? `<span class="date-source-badge ${level.dateSource === "manual" ? "manual" : "auto"}">${level.dateSource === "manual" ? "Manual" : "Auto"}</span>` : ""}
+        </div>`).join("")}
+    </div>`;
+  preview.classList.remove("hidden");
+}
 function syncDraftFromInputs() {
   if (!draft) return;
   draft.projectNumber = normalizeSpaces($("projectNumber").value).toUpperCase();
@@ -648,6 +695,9 @@ function resetIntake() {
   $("parseStatus").textContent = "No PDF selected.";
   $("reviewCard").classList.add("hidden");
   $("levelEditor").innerHTML = "";
+  $("deliveryPreview").classList.add("hidden");
+  $("deliveryPreview").innerHTML = "";
+  clearIntakeValidation();
 }
 
 function projectToCloudRows(project) {
@@ -745,24 +795,152 @@ async function createProjectGraph(project) {
   }
 }
 
-async function saveDraftProject() {
-  if (!draft) return;
+function clearIntakeValidation() {
+  ["projectNumber", "address", "projectDate"].forEach(id => $(id)?.classList.remove("input-invalid"));
+  document.querySelectorAll(".level-name, .level-date, .material-name, .material-lf").forEach(input => input.classList.remove("input-invalid"));
+  const message = $("intakeValidationMessage");
+  if (message) {
+    message.textContent = "";
+    message.classList.add("hidden");
+  }
+}
+
+function showIntakeValidation(message, target = null) {
+  const el = $("intakeValidationMessage");
+  if (el) {
+    el.textContent = message;
+    el.classList.remove("hidden");
+  }
+  if (target) {
+    target.classList.add("input-invalid");
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    requestAnimationFrame(() => target.focus?.());
+  }
+}
+
+function validDraftMaterials(level) {
+  return (level.materials || []).filter(item => normalizeSpaces(item.material) && Number(item.requiredLf) > 0);
+}
+
+function validateDraftForReview() {
+  clearIntakeValidation();
+  if (!draft) {
+    showIntakeValidation("Upload a material-list PDF before reviewing the project.");
+    return false;
+  }
   syncDraftFromInputs();
   const projectDate = $("projectDate").value;
 
-  if (!draft.projectNumber) return alert("Project # is required.");
-  if (!draft.address) return alert("Address (Project Name) is required.");
-  if (!draft.levels.length) return alert("At least one level is required.");
-
-  for (const level of draft.levels) {
-    if (!level.name) return alert("Every level needs a name.");
-    if ($("applyDateAll").checked) level.estimatedDeliveryDate = projectDate;
-    if (!level.estimatedDeliveryDate) return alert(`Enter an estimated delivery date for ${level.name}.`);
-    level.materials = level.materials.filter(item => normalizeSpaces(item.material) && Number(item.requiredLf) > 0);
-    if (!level.materials.length) return alert(`${level.name} needs at least one material.`);
+  if (!draft.projectNumber) {
+    showIntakeValidation("Project # is required.", $("projectNumber"));
+    return false;
+  }
+  if (!draft.address) {
+    showIntakeValidation("Address (Project Name) is required.", $("address"));
+    return false;
+  }
+  if (!draft.levels.length) {
+    showIntakeValidation("At least one level is required.");
+    return false;
   }
 
-  const saveButton = $("saveProject");
+  if ($("applyDateAll").checked && projectDate) {
+    draft.levels.forEach(level => {
+      level.estimatedDeliveryDate = projectDate;
+      level.dateSource = "auto";
+    });
+  }
+
+  for (let index = 0; index < draft.levels.length; index += 1) {
+    const level = draft.levels[index];
+    const levelNameInput = document.querySelector(`.level-name[data-level-index="${index}"]`);
+    const levelDateInput = document.querySelector(`.level-date[data-level-index="${index}"]`);
+    if (!level.name) {
+      showIntakeValidation("Every level needs a name.", levelNameInput);
+      return false;
+    }
+    if (!level.estimatedDeliveryDate) {
+      showIntakeValidation(`Enter an estimated delivery date for ${level.name}.`, levelDateInput);
+      return false;
+    }
+    if (!validDraftMaterials(level).length) {
+      showIntakeValidation(`${level.name} needs at least one material with a positive Total Length.`);
+      return false;
+    }
+  }
+  renderDraftLevels();
+  return true;
+}
+
+function projectReviewSummaryHtml() {
+  const levelRows = draft.levels.map((level, index) => {
+    const included = validDraftMaterials(level);
+    const levelLf = included.reduce((sum, item) => sum + Number(item.requiredLf || 0), 0);
+    return `
+      <div class="review-level-row">
+        <div>
+          <strong>${escapeHtml(level.name || `Level ${index + 1}`)}</strong>
+          <span>${included.length} material line${included.length === 1 ? "" : "s"} · ${formatNumber(levelLf)} LF</span>
+        </div>
+        <div class="review-level-date">
+          <strong>${escapeHtml(formatDate(level.estimatedDeliveryDate))}</strong>
+          ${level.estimatedDeliveryDate ? `<span class="date-source-badge ${level.dateSource === "manual" ? "manual" : "auto"}">${level.dateSource === "manual" ? "Manual" : "Auto"}</span>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+
+  const validMaterials = draft.levels.flatMap(level => validDraftMaterials(level));
+  const uniqueTypes = new Set(validMaterials.map(item => normalizeMaterialKey(item.material))).size;
+  const totalLf = validMaterials.reduce((sum, item) => sum + Number(item.requiredLf || 0), 0);
+  const filtered = draft.levels.flatMap(level => (level.filteredMaterials || []).map(item => ({ ...item, levelName: level.name })));
+
+  return `
+    <section class="review-project-identity">
+      <h3>${escapeHtml(draft.address)}</h3>
+      <div class="review-project-meta">
+        <span><strong>Project #</strong> ${escapeHtml(draft.projectNumber || "—")}</span>
+        <span><strong>Revision</strong> ${escapeHtml(draft.revision || "—")}</span>
+        <span><strong>Customer</strong> ${escapeHtml(draft.customer || "—")}</span>
+        <span><strong>Sales</strong> ${escapeHtml(draft.sales || "—")}</span>
+      </div>
+    </section>
+    <section class="review-section">
+      <div class="review-section-heading">
+        <h3>Estimated Delivery Dates</h3>
+        <span>${draft.levels.length} package${draft.levels.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="review-level-list">${levelRows}</div>
+    </section>
+    <div class="review-summary-strip">
+      <span><strong>${draft.levels.length}</strong> package${draft.levels.length === 1 ? "" : "s"}</span>
+      <span><strong>${uniqueTypes}</strong> material type${uniqueTypes === 1 ? "" : "s"}</span>
+      <span><strong>${formatNumber(totalLf)}</strong> total LF</span>
+    </div>
+    ${filtered.length ? `
+      <div class="review-filter-warning">
+        <strong>⚠ ${filtered.length} filtered Web Stiffener entr${filtered.length === 1 ? "y remains" : "ies remain"} excluded</strong>
+        <span>These items will not be added to the project unless you go back and add them.</span>
+        <div>${filtered.map(item => `<span>${escapeHtml(item.levelName)} · ${escapeHtml(item.material)} · ${formatNumber(item.requiredLf)} LF</span>`).join("")}</div>
+      </div>` : ""}`;
+}
+
+function openProjectReview() {
+  if (!validateDraftForReview()) return;
+  $("projectReviewContent").innerHTML = projectReviewSummaryHtml();
+  const dialog = $("projectReviewDialog");
+  dialog.returnValue = "";
+  dialog.showModal();
+  requestAnimationFrame(() => $("confirmProjectSave")?.focus());
+}
+
+async function persistDraftProject() {
+  if (!draft) return;
+  if (!validateDraftForReview()) {
+    $("projectReviewDialog")?.close("cancel");
+    return;
+  }
+
+  const saveButton = $("confirmProjectSave");
   saveButton.disabled = true;
   saveButton.textContent = "Saving…";
   try {
@@ -780,12 +958,16 @@ async function saveDraftProject() {
       sales: draft.sales,
       address: draft.address,
       defaultEstimatedDeliveryDate: draft.defaultEstimatedDeliveryDate,
-      levels: draft.levels
+      levels: draft.levels.map(level => ({
+        ...level,
+        materials: validDraftMaterials(level)
+      }))
     };
     const newProjectId = await createProjectGraph(projectRecord);
     if (existing) await deleteRows("projects", { id: `eq.${existing.id}` });
     await recordActivity("project", newProjectId, existing ? "replace_project" : "create_project", { project_number: draft.projectNumber, revision: draft.revision, address_project_name: draft.address, customer: draft.customer, sales: draft.sales });
     setProjectCollapsed(newProjectId, draft.levels.length > 1);
+    if ($("projectReviewDialog")?.open) $("projectReviewDialog").close("saved");
     resetIntake();
     await syncFromCloud({ silent: true });
     setTab("matrix");
@@ -794,10 +976,9 @@ async function saveDraftProject() {
     alert(`Could not save the project to shared data.\n\n${error.message}`);
   } finally {
     saveButton.disabled = false;
-    saveButton.textContent = "Add Project to Shared Forecast";
+    saveButton.textContent = "Confirm & Add Project";
   }
 }
-
 function projectMatchesMatrixSearch(project) {
   const query = normalizeSpaces($("projectSearch")?.value || "").toLowerCase();
   if (!query) return true;
@@ -986,6 +1167,18 @@ function wireBackdropClose(dialog) {
     setTab("matrix");
     if (dialog.id === "deliveryDialog") activeDelivery = null;
     if (dialog.id === "projectEditDialog") activeEditProject = null;
+  });
+}
+
+function wireReviewBackdropClose() {
+  const dialog = $("projectReviewDialog");
+  dialog.addEventListener("click", event => {
+    const rect = dialog.getBoundingClientRect();
+    const outside = event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+    if (event.target === dialog || outside) dialog.close("cancel");
+  });
+  dialog.addEventListener("close", () => {
+    if (dialog.returnValue !== "saved") requestAnimationFrame(() => $("saveProject")?.focus());
   });
 }
 
@@ -1727,7 +1920,15 @@ function wireEvents() {
     applyProjectDateToDraft();
     renderDraftLevels();
   };
+  $("projectDate").addEventListener("input", handleProjectDateChange);
   $("projectDate").addEventListener("change", handleProjectDateChange);
+  ["projectNumber", "revision", "customer", "sales", "address"].forEach(id => {
+    $(id).addEventListener("input", () => {
+      $(id).classList.remove("input-invalid");
+      const message = $("intakeValidationMessage");
+      if (message && !message.classList.contains("hidden")) clearIntakeValidation();
+    });
+  });
 
   $("applyDateAll").addEventListener("change", () => {
     if (!draft) {
@@ -1768,6 +1969,7 @@ function wireEvents() {
       id: uid(),
       name: `Level ${draft.levels.length + 1}`,
       estimatedDeliveryDate: nextDate,
+      dateSource: nextDate ? "auto" : "",
       materials: [{ id: uid(), material: "", requiredLf: 0 }],
       filteredMaterials: [],
       deliveries: []
@@ -1775,11 +1977,23 @@ function wireEvents() {
     renderDraftLevels();
   });
 
+  $("levelEditor").addEventListener("input", event => {
+    if (event.target.matches("input")) event.target.classList.remove("input-invalid");
+    if (!draft) return;
+    const levelName = event.target.closest(".level-name");
+    if (levelName) {
+      draft.levels[Number(levelName.dataset.levelIndex)].name = normalizeSpaces(levelName.value);
+      renderDeliveryPreview();
+    }
+  });
+
   $("levelEditor").addEventListener("change", event => {
     const input = event.target.closest(".level-date");
     if (!input || !draft) return;
     syncDraftFromInputs();
     const levelIndex = Number(input.dataset.levelIndex);
+
+    draft.levels[levelIndex].dateSource = draft.levels[levelIndex].estimatedDeliveryDate ? "manual" : "";
 
     if ($("applyDateAll").checked) {
       // A manual exception breaks the "same date for all" rule, while preserving all current dates.
@@ -1796,7 +2010,14 @@ function wireEvents() {
       }
       continueWeeklyScheduleFrom(levelIndex);
       renderDraftLevels();
+      return;
     }
+
+    if (levelIndex === 0) {
+      $("projectDate").value = draft.levels[0].estimatedDeliveryDate || "";
+      draft.defaultEstimatedDeliveryDate = $("projectDate").value;
+    }
+    renderDraftLevels();
   });
 
   $("levelEditor").addEventListener("click", event => {
@@ -1822,7 +2043,8 @@ function wireEvents() {
     }
   });
 
-  $("saveProject").addEventListener("click", saveDraftProject);
+  $("saveProject").addEventListener("click", openProjectReview);
+  $("confirmProjectSave").addEventListener("click", persistDraftProject);
   $("showDelivered").addEventListener("change", renderMatrix);
   $("projectSearch").addEventListener("input", renderMatrix);
   $("clearProjectSearch").addEventListener("click", () => {
@@ -1901,6 +2123,7 @@ function wireEvents() {
   wireBackdropClose($("deliveryDialog"));
   wireBackdropClose($("projectEditDialog"));
   wireBackdropClose($("deleteProjectDialog"));
+  wireReviewBackdropClose();
 
   $("exportMatrixCsv").addEventListener("click", exportMatrixCsv);
   $("exportForecastCsv").addEventListener("click", exportForecastCsv);

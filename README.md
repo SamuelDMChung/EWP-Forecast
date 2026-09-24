@@ -1,6 +1,22 @@
-# EWP Material Forecast — V0.11
+# EWP Material Forecast — V0.12
 
 **Developed by Samuel Chung @ Griff**
+
+## V0.12 changes
+
+- Removes the explanatory sentence above **Projects & Materials** and simplifies project search to a single in-field search control with an integrated clear button.
+- Keeps both delivery scheduling rules together directly beneath **Estimated Delivery Date**.
+- Renames the rules to **Apply this delivery date to all levels** and **Auto-set each next level to 1 week after the previous level**.
+- Adds an inline **Delivery date preview** for all detected levels, with Auto/Manual indicators.
+- Preserves the V0.11 scheduling rules: same-date and weekly modes are mutually exclusive; manual same-date exceptions turn that mode off; a manual weekly edit becomes a new anchor for later levels.
+- Changes the intake save flow to **Review Project → Confirm & Add Project**. No project data is written to Supabase until the confirmation modal is accepted.
+- Adds a concise review modal showing Address (Project Name), project metadata, each level/date, package count, material-type count, total LF, and any still-excluded Web Stiffener entries.
+- Review can be dismissed with **Back**, the × button, **Esc**, or by clicking outside the modal.
+- Adds inline required-field validation and visual error highlighting before the review modal opens.
+- Adds subtle matrix zebra striping and row hover to make large material matrices easier to follow.
+- Existing Realtime sync, RLS-compatible authentication, Entry History, project deletion, lazy history, search filtering, Web Stiffener filtering, sticky matrix navigation and monthly forecast are preserved.
+
+No new Supabase SQL is required for V0.12.
 
 ## V0.11 changes
 

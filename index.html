@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.11 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.12 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -62,9 +62,14 @@
             <label>Customer<input id="customer" autocomplete="off" placeholder="Customer" /></label>
             <label>Sales<input id="sales" autocomplete="off" placeholder="Salesperson" /></label>
             <label class="full">Address (Project Name)<textarea id="address" rows="2" placeholder="Address / project name"></textarea></label>
-            <label>Estimated Delivery Date<input id="projectDate" type="date" /></label>
-            <label class="checkbox-row"><input id="applyDateAll" type="checkbox" /> Use this date for all levels</label>
-            <label class="checkbox-row full"><input id="staggerWeekly" type="checkbox" /> Each subsequent level 1 week after previous level</label>
+            <div class="full intake-schedule-block">
+              <label class="delivery-date-field">Estimated Delivery Date<input id="projectDate" type="date" /></label>
+              <div class="schedule-options" aria-label="Delivery date scheduling options">
+                <label class="checkbox-row compact"><input id="applyDateAll" type="checkbox" /> Apply this delivery date to all levels</label>
+                <label class="checkbox-row compact"><input id="staggerWeekly" type="checkbox" /> Auto-set each next level to 1 week after the previous level</label>
+              </div>
+              <div id="deliveryPreview" class="delivery-preview hidden" aria-live="polite"></div>
+            </div>
           </div>
         </article>
       </div>
@@ -78,9 +83,10 @@
           <button id="addLevelBtn" class="button secondary">+ Add Level</button>
         </div>
         <div id="levelEditor" class="level-editor"></div>
+        <div id="intakeValidationMessage" class="form-validation hidden" role="alert"></div>
         <div class="save-row">
-          <p class="small-note">Nothing is added to the shared forecast until you save. You can correct any parser result first.</p>
-          <button id="saveProject" class="button primary large">Add Project to Shared Forecast</button>
+          <p class="small-note">Nothing is added to the shared forecast until you confirm the review. You can correct any parser result first.</p>
+          <button id="saveProject" class="button primary large">Review Project</button>
         </div>
       </article>
     </section>
@@ -89,7 +95,6 @@
       <div class="toolbar">
         <div>
           <h2>Projects &amp; Materials</h2>
-          <p>Rows are materials. Expanded projects show one column per level; multi-level projects can collapse into one summary column. Cells show <strong>outstanding LF</strong>.</p>
         </div>
         <div class="toolbar-actions">
           <label class="checkbox-row compact"><input id="showDelivered" type="checkbox" /> Show fully delivered levels</label>
@@ -98,11 +103,12 @@
         </div>
       </div>
       <div class="project-search-bar">
-        <label class="project-search-field">Search projects
-          <input id="projectSearch" type="search" placeholder="Customer, sales, project # or project name" autocomplete="off" />
-        </label>
+        <div class="project-search-box">
+          <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+          <input id="projectSearch" type="search" placeholder="Search by customer, sales, project #, or project name…" autocomplete="off" aria-label="Search projects" />
+          <button id="clearProjectSearch" type="button" class="search-clear hidden" aria-label="Clear project search">×</button>
+        </div>
         <span id="projectSearchCount" class="project-search-count"></span>
-        <button id="clearProjectSearch" type="button" class="button ghost hidden">Clear</button>
       </div>
       <div id="matrixEmpty" class="empty-state">Add a project to build the material matrix.</div>
       <div id="matrixTopScroll" class="matrix-top-scroll hidden" aria-label="Horizontal project scroll">
@@ -152,6 +158,24 @@
   </main>
 
 
+
+  <dialog id="projectReviewDialog" class="dialog review-dialog" aria-labelledby="projectReviewTitle">
+    <form method="dialog" id="projectReviewForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">REVIEW</p>
+          <h2 id="projectReviewTitle">Review Project Entry</h2>
+          <p class="muted">Please review the project and delivery schedule before saving.</p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Back to project entry">×</button>
+      </div>
+      <div id="projectReviewContent" class="project-review-content"></div>
+      <div class="dialog-footer">
+        <button value="cancel" class="button secondary">Back</button>
+        <button id="confirmProjectSave" type="button" class="button primary large">Confirm &amp; Add Project</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="deliveryDialog" class="dialog">
     <form method="dialog" id="deliveryForm">
