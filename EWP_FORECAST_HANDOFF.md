@@ -1,6 +1,6 @@
 # EWP Material Forecast — Development Handoff
 
-**Canonical baseline:** V0.24  
+**Canonical baseline:** V0.25  
 **Project owner / developer credit:** Samuel Chung @ Griff
 
 This file is the canonical workflow and development handoff for future ChatGPT/code migrations. When continuing development in a new chat, upload the latest ZIP and tell ChatGPT to read this file before changing code.
@@ -216,3 +216,16 @@ GitHub Pages does not run SQL files automatically. SQL files may remain in the r
 - Shared multi-user changes use Supabase Realtime plus manual/window-focus refresh fallback.
 - Continue using optimistic version checks / database guards where practical.
 - Keep README and this handoff updated with each material workflow/schema change.
+
+
+### V0.25 UX cleanup
+
+Approved scope only: #1, #2, and #3 from the UI cleanup review.
+
+Implemented in V0.25:
+- Projects & Materials column headers are visually cleaner without hiding buttons. Status is separated from the action row, and Manage is visually emphasized while Edit and Expand/Collapse remain visible.
+- The Manage Delivery window no longer uses an Update Date button. Estimated Delivery Date now auto-saves on change and shows a small save status.
+- The Put in Spruce / Deliver control remains visible as a compact two-tab mode switch.
+- Put in Spruce mode keeps all main buttons visible. Quick actions are renamed to Use Entire Forecast and Clear Quantities for clarity.
+
+No SQL migration is required for V0.25.

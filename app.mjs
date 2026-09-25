@@ -1629,9 +1629,11 @@ function levelHeaderHtml(project, level) {
       ${progressHtml(stats.percent, "level complete")}
       <div class="project-card-actions">
         <span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span>
-        <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage</button>
-        <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
-        ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse</button>` : ""}
+        <div class="project-card-buttons">
+          <button class="mini-button primary-mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage</button>
+                    <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
+          ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse</button>` : ""}
+        </div>
       </div>
     </div>
   </th>`;
@@ -1650,8 +1652,10 @@ function collapsedProjectHeaderHtml(project) {
       ${progressHtml(stats.percent, "overall complete")}
       <div class="project-card-actions">
         <span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span>
-        <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
-        <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand</button>
+        <div class="project-card-buttons">
+          <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
+          <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand</button>
+        </div>
       </div>
     </div>
   </th>`;
@@ -2874,6 +2878,15 @@ function deliverySubtitleText(project, level) {
   return `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Estimated delivery ${formatDate(level.estimatedDeliveryDate)}`;
 }
 
+const FORECAST_DATE_STATUS = { idle: "Auto-saves", saving: "Saving…", saved: "Saved", error: "Could not save" };
+
+function setForecastDateStatus(state = "idle") {
+  const node = $("forecastDateStatus");
+  if (!node) return;
+  node.textContent = FORECAST_DATE_STATUS[state] || FORECAST_DATE_STATUS.idle;
+  node.dataset.state = state;
+}
+
 
 function refreshSpruceActionControls() {
   if (!activeDelivery) return;
@@ -2908,6 +2921,7 @@ function openDelivery(projectId, levelId) {
   $("deliveryTitle").textContent = `${projectTitle(project)} — ${level.name}`;
   $("deliverySubtitle").textContent = deliverySubtitleText(project, level);
   $("forecastDateEdit").value = level.estimatedDeliveryDate || "";
+  setForecastDateStatus("idle");
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
   $("spruceOrderNote").value = "";
@@ -3126,6 +3140,7 @@ function refreshDeliveryDialogViews() {
   $("deliveryTitle").textContent = `${projectTitle(activeDelivery.project)} — ${activeDelivery.level.name}`;
   $("deliverySubtitle").textContent = deliverySubtitleText(activeDelivery.project, activeDelivery.level);
   $("forecastDateEdit").value = activeDelivery.level.estimatedDeliveryDate || "";
+  setForecastDateStatus("saved");
   renderDeliveryItems();
   renderOpenSpruceOrders();
   renderDeliveryHistory();
@@ -4064,7 +4079,16 @@ async function updateForecastDate() {
   if (!activeDelivery) return;
   const nextDate = $("forecastDateEdit").value;
   const { project, level } = activeDelivery;
-  if (project.projectType !== "sfd" && !nextDate) return alert("Choose an estimated delivery date for a Multi-family package.");
+  if (project.projectType !== "sfd" && !nextDate) {
+    $("forecastDateEdit").value = level.estimatedDeliveryDate || "";
+    setForecastDateStatus("error");
+    return alert("Choose an estimated delivery date for a Multi-family package.");
+  }
+  if ((level.estimatedDeliveryDate || "") === (nextDate || "")) {
+    setForecastDateStatus("saved");
+    return;
+  }
+  setForecastDateStatus("saving");
   try {
     const result = await updateRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` }, {
       estimated_delivery_date: nextDate || null,
@@ -4078,8 +4102,10 @@ async function updateForecastDate() {
     });
     await refreshActiveDelivery();
     if (activeDelivery) refreshDeliveryDialogViews();
+    else setForecastDateStatus("saved");
   } catch (error) {
     console.error(error);
+    setForecastDateStatus("error");
     alert(error.message);
     await syncFromCloud({ silent: true });
   }
@@ -4411,7 +4437,7 @@ function wireEvents() {
     }
   });
 
-  $("updateForecastDate").addEventListener("click", updateForecastDate);
+  $("forecastDateEdit").addEventListener("change", updateForecastDate);
   $("spruceModeEntry").addEventListener("click", async () => {
     if ($("spruceModeEntry").dataset.action === "remove") {
       try { await removeAllOpenSpruceOrders(); }

@@ -1,18 +1,17 @@
-# EWP Material Forecast — V0.24
+# EWP Material Forecast — V0.25
 
 **Developed by Samuel Chung @ Griff**
 
 
-## V0.24 changes
+## V0.25 changes
 
-V0.24 cleans up and hardens the Javelin delivery-PDF import flow.
+V0.25 is a UX cleanup build focused only on the approved button/layout simplifications in Projects & Materials and the Manage Delivery window.
 
-- Removes the duplicate visible browser **Choose File** control. The delivery dialog now presents only the intended **Import Delivery PDF** / **Import / Revise Delivery PDF** controls.
-- The visible import controls are now native labels tied directly to the real PDF file input, avoiding the prior `showPicker()` / scripted-click picker path for normal mouse/touch use.
-- The underlying file input is hidden directly in the HTML so a stale stylesheet cannot expose the browser's raw **Choose File** control.
-- Upgrades the on-demand PDF reader from PDF.js **4.10.38** to **6.3.289**, with jsDelivr first and cdnjs fallback. This avoids current Chromium compatibility problems seen with the older 4.10.38 build.
-- Same-file re-import remains supported because the file input is cleared after every selection/import attempt.
-- No Supabase schema, RLS, Realtime, or SQL change is required for V0.24. Deploy the frontend files only.
+- Projects & Materials headers are cleaner without hiding actions. Status now sits on its own line, and **Manage** is visually emphasized while **Edit** and **Expand / Collapse** remain visible.
+- Estimated Delivery Date now **auto-saves** when changed. The separate **Update Date** button is removed and replaced by a small save-status indicator.
+- **Put in Spruce** / **Deliver** remains a compact tab-style mode switch in the Manage Delivery window.
+- Put in Spruce mode keeps the main buttons visible, but the quick actions are clearer: **Use Entire Forecast** and **Clear Quantities**.
+- No Supabase schema, RLS, Realtime, or SQL change is required for V0.25. Deploy the frontend files only.
 
 
 ## V0.23 changes

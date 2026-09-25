@@ -249,13 +249,22 @@ thead .material-col { z-index: 6; background: #f8fafc; }
   margin: 18px 0 14px;
 }
 .delivery-estimate-control label { flex: 0 1 405px; }
-.delivery-estimate-control .button { white-space: nowrap; }
+.inline-save-status {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.inline-save-status[data-state="saving"] { color: var(--accent); }
+.inline-save-status[data-state="saved"] { color: var(--success); }
+.inline-save-status[data-state="error"] { color: var(--danger); }
 .delivery-transaction-meta {
   grid-template-columns: minmax(190px, .7fr) minmax(300px, 1.3fr);
   margin-top: 0;
   margin-bottom: 14px;
 }
-.delivery-actions { justify-content: flex-start; margin: 10px 0; }
+.delivery-actions { justify-content: flex-start; margin: 10px 0 14px; }
 .delivery-table { width: 100%; min-width: 0; }
 .delivery-table th, .delivery-table td { text-align: right; }
 .delivery-table th:first-child, .delivery-table td:first-child { text-align: left; white-space: normal; }
@@ -293,7 +302,7 @@ thead .material-col { z-index: 6; background: #f8fafc; }
   .form-grid .full { grid-column: auto; }
   .delivery-estimate-control { align-items: stretch; flex-direction: column; }
   .delivery-estimate-control label { flex: none; }
-  .delivery-estimate-control .button { width: 100%; }
+  .inline-save-status { min-height: 0; }
   .delivery-transaction-meta { grid-template-columns: 1fr; }
   .data-footer { align-items: flex-start; flex-direction: column; }
   .footer-actions { flex-wrap: wrap; }
@@ -353,12 +362,21 @@ thead .material-col { z-index: 6; background: #f8fafc; }
 .operational-line strong { color: #344054; font-weight: 800; }
 .package-line { margin-top: 1px; }
 .project-card-actions {
+  display: grid;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+.project-card-buttons {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  margin-top: auto;
-  padding-top: 5px;
+}
+.primary-mini-button {
+  background: var(--accent-soft);
+  border-color: #bfd2ff;
+  color: var(--accent-dark);
 }
 .progress-row {
   display: flex;
@@ -1382,7 +1400,7 @@ select { font: inherit; }
 }
 
 
-/* V0.24: one reliable delivery-PDF control; the native file input stays completely hidden. */
+/* V0.24+: one reliable delivery-PDF control; the native file input stays completely hidden. */
 .file-picker-label {
   display: inline-flex;
   align-items: center;

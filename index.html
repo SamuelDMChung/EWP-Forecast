@@ -363,12 +363,12 @@
 
       <div class="delivery-estimate-control planning-control">
         <label>Estimated Delivery Date<input id="forecastDateEdit" type="date" /></label>
-        <button id="updateForecastDate" type="button" class="button secondary">Update Date</button>
+        <span id="forecastDateStatus" class="small-note inline-save-status" aria-live="polite">Auto-saves</span>
       </div>
 
       <div class="spruce-mode-switch" role="group" aria-label="Level material action">
         <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
-        <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver Spruce Order</button>
+        <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver</button>
       </div>
       <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" hidden style="display:none" />
 
@@ -390,8 +390,8 @@
         </div>
 
         <div class="delivery-actions">
-          <button id="fillEntireLevel" type="button" class="button secondary">Put Entire Forecast in Spruce</button>
-          <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Inputs</button>
+          <button id="fillEntireLevel" type="button" class="button secondary">Use Entire Forecast</button>
+          <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Quantities</button>
         </div>
 
         <div class="delivery-material-search">
