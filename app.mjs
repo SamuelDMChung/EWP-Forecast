@@ -329,6 +329,7 @@ function mapCloudRows(rows) {
       sourceProjectNumber: row.source_project_number || "",
       sourceRevision: row.source_revision || "",
       sourceLevelName: row.source_level_name || "",
+      isLastPackage: row.is_last_package === true,
       enteredAt: row.entered_at || row.created_at || "",
       note: row.note || "",
       deliveredAt: row.delivered_at || "",
@@ -688,12 +689,27 @@ function excludedFor(material) {
   return Math.max(0, Math.min(Number(material.requiredLf || 0), Number(material.excludedLf || 0)));
 }
 
-function outstandingFor(level, material) {
+function levelHasLastPackage(level) {
+  return (level?.spruceOrders || []).some(order => order.isLastPackage === true);
+}
+
+function baseOutstandingFor(level, material) {
   return Math.max(0, Number(material.requiredLf || 0) - deliveredFor(level, material) - excludedFor(material));
 }
 
+function rawForecastRemainingFor(level, material) {
+  return Math.max(0, baseOutstandingFor(level, material) - inSpruceFor(level, material));
+}
+
+function outstandingFor(level, material) {
+  const inSpruce = inSpruceFor(level, material);
+  if (levelHasLastPackage(level)) return inSpruce;
+  return Math.max(baseOutstandingFor(level, material), inSpruce);
+}
+
 function forecastRemainingFor(level, material) {
-  return Math.max(0, outstandingFor(level, material) - inSpruceFor(level, material));
+  if (levelHasLastPackage(level)) return 0;
+  return rawForecastRemainingFor(level, material);
 }
 
 function levelStats(level) {
@@ -712,9 +728,9 @@ function levelStats(level) {
     forecastRemaining += forecastRemainingFor(level, material);
   }
   const resolved = Math.min(required, delivered + excluded);
-  const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
+  const percent = outstanding <= EPSILON ? 100 : required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
   const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
-  return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status };
+  return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status, forecastClosed: levelHasLastPackage(level) };
 }
 
 function projectStats(project) {
@@ -741,7 +757,7 @@ function projectStats(project) {
     return aDate.localeCompare(bDate) || a.index - b.index;
   });
   const resolved = Math.min(required, delivered + excluded);
-  const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
+  const percent = outstanding <= EPSILON ? 100 : required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
   const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
   return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status, levelsRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
 }
@@ -2680,7 +2696,7 @@ function activityDetailText(row) {
     const order = d.delivery_code || "Spruce order";
     const date = d.delivery_date ? `Delivered ${formatDate(d.delivery_date)}` : "";
     const source = d.source_file_name ? `Source: ${d.source_file_name}` : "";
-    return [order, date, d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF` : "", source, items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
+    return [order, d.last_package ? "Last package" : "", date, d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF` : "", source, items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
   }
   if (row.action === "remove_level_from_spruce") return [Array.isArray(d.delivery_codes) ? d.delivery_codes.filter(Boolean).join(", ") : "Open Spruce orders", d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF returned to forecast` : ""].filter(Boolean).join(" · ");
   if (row.action === "undo_spruce_delivery") return [d.delivery_code || "Spruce order", d.delivery_date ? `Delivery ${formatDate(d.delivery_date)} undone` : "Delivery undone", d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF back in Spruce` : ""].filter(Boolean).join(" · ");
@@ -2925,6 +2941,7 @@ function openDelivery(projectId, levelId) {
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
   $("spruceOrderNote").value = "";
+  $("spruceLastPackage").checked = false;
   $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(level);
   $("sprucePdfFile").value = "";
   $("spruceImportStatus").textContent = "";
@@ -2984,6 +3001,7 @@ function renderOpenSpruceOrders() {
       <div class="spruce-order-card-head">
         <div>
           <strong>${escapeHtml(order.deliveryCode || "Spruce Order")}</strong>
+          ${order.isLastPackage ? '<span class="spruce-order-last-badge">LAST PACKAGE</span>' : ""}
           <p class="small-note">Entered ${escapeHtml(formatDateTime(enteredAt))}${order.sourceFileName ? ` · ${escapeHtml(order.sourceFileName)}` : ""}${order.note ? ` · ${escapeHtml(order.note)}` : ""}</p>
         </div>
         <span class="spruce-order-total">${formatNumber(spruceOrderTotal(order))} LF</span>
@@ -3104,7 +3122,7 @@ function renderDeliveryHistory() {
       const date = (order.deliveredAt || "").slice(0, 10);
       return `<div class="history-item">
         <div>
-          <strong>${escapeHtml(formatDate(date))} — ${escapeHtml(order.deliveryCode || "Spruce Order")}${order.deliveryNote ? ` · ${escapeHtml(order.deliveryNote)}` : ""}</strong>
+          <strong>${escapeHtml(formatDate(date))} — ${escapeHtml(order.deliveryCode || "Spruce Order")}${order.isLastPackage ? " · Last package" : ""}${order.deliveryNote ? ` · ${escapeHtml(order.deliveryNote)}` : ""}</strong>
           ${(order.items || []).map(item => `<p>${escapeHtml(item.material)}: ${formatNumber(item.lf)} LF</p>`).join("")}
         </div>
         <button type="button" class="history-delete undo-spruce-delivery" data-spruce-order-id="${escapeHtml(order.id)}">Undo delivery</button>
@@ -3251,7 +3269,7 @@ function spruceImportAvailableForRow(row) {
     ? (existing.items || []).filter(item => item.materialId === row.materialId || normalizeMaterialKey(item.material) === row.key)
       .reduce((sum, item) => sum + Number(item.lf || 0), 0)
     : 0;
-  return forecastRemainingFor(activeDelivery.level, material) + existingLf;
+  return rawForecastRemainingFor(activeDelivery.level, material) + existingLf;
 }
 
 function updateSpruceImportValidationUi() {
@@ -3279,15 +3297,38 @@ function updateSpruceImportValidationUi() {
 
     const available = spruceImportAvailableForRow(row);
     if (row.requestedLf > available + EPSILON) {
-      blockers.push(`${row.materialName} requests ${formatNumber(row.requestedLf)} LF but only ${formatNumber(available)} LF is available for this delivery.`);
+      warnings.push(`${row.materialName} requests ${formatNumber(row.requestedLf)} LF, which is ${formatNumber(row.requestedLf - available)} LF above the current forecast. The full imported quantity will still be accepted.`);
       if (statusEl) {
-        statusEl.textContent = `Exceeds by ${formatNumber(row.requestedLf - available)} LF`;
-        statusEl.className = "spruce-import-row-status import-error";
+        statusEl.textContent = `Over by ${formatNumber(row.requestedLf - available)} LF · allowed`;
+        statusEl.className = "spruce-import-row-status import-warning";
       }
     } else if (statusEl) {
       statusEl.textContent = row.requestedLf <= EPSILON ? "Skipped" : "Matched";
       statusEl.className = `spruce-import-row-status ${row.requestedLf <= EPSILON ? "import-muted" : "import-ok"}`;
     }
+  }
+
+  if (spruceImportDraft.lastPackage) {
+    const requestedByMaterialId = new Map();
+    for (const row of spruceImportDraft.rows || []) {
+      if (!row.materialId) continue;
+      requestedByMaterialId.set(row.materialId, (requestedByMaterialId.get(row.materialId) || 0) + Number(row.requestedLf || 0));
+    }
+    let closingLf = 0;
+    for (const material of activeDelivery.level.materials || []) {
+      const currentAvailable = rawForecastRemainingFor(activeDelivery.level, material);
+      const existing = spruceImportExistingOrder();
+      const existingLf = existing && !existing.deliveredAt
+        ? (existing.items || []).filter(item => item.materialId === material.id || normalizeMaterialKey(item.material) === normalizeMaterialKey(material.material))
+          .reduce((sum, item) => sum + Number(item.lf || 0), 0)
+        : 0;
+      const availableBeforeRevision = currentAvailable + existingLf;
+      const requested = requestedByMaterialId.get(material.id) || 0;
+      closingLf += Math.max(0, availableBeforeRevision - requested);
+    }
+    warnings.push(closingLf > EPSILON
+      ? `Last Package of the Level is checked. Saving this delivery will close ${formatNumber(closingLf)} LF of remaining forecast that is not included in this package.`
+      : "Last Package of the Level is checked. Saving this delivery will close the level forecast after this package; the level stays Ongoing until all Spruce material is delivered.");
   }
 
   if (!positiveRows) blockers.push("At least one matched EWP quantity must be greater than zero.");
@@ -3309,6 +3350,7 @@ function renderSpruceImportReview() {
   if (!spruceImportDraft || !activeDelivery) return;
   const parsed = spruceImportDraft.parsed;
   $("spruceImportDeliveryCode").value = spruceImportDraft.deliveryCode || "";
+  $("spruceImportLastPackage").checked = spruceImportDraft.lastPackage === true;
   $("spruceImportNote").value = spruceImportDraft.note || "";
   const sourceParts = [
     parsed.projectNumber ? `${parsed.projectNumber}${parsed.revision ? ` ${parsed.revision}` : ""}` : "",
@@ -3346,9 +3388,11 @@ async function handleSpruceDeliveryPdf(file) {
     const lines = await extractPdfLines(file, lib);
     const parsed = parseDeliveryMaterialReportLines(lines, file.name);
     const deliveryCode = normalizeDeliveryCode(parsed.deliveryCode) || suggestSpruceDeliveryCode(activeDelivery.level);
+    const existing = findSpruceOrderByCode(activeDelivery.level, deliveryCode);
     spruceImportDraft = {
       parsed,
       deliveryCode,
+      lastPackage: existing?.isLastPackage === true || $("spruceLastPackage").checked,
       note: normalizeSpaces($("spruceOrderNote").value),
       rows: []
     };
@@ -3369,6 +3413,7 @@ async function handleSpruceDeliveryPdf(file) {
 async function confirmSpruceImport() {
   if (!spruceImportDraft || !activeDelivery) return;
   spruceImportDraft.deliveryCode = normalizeDeliveryCode($("spruceImportDeliveryCode").value);
+  spruceImportDraft.lastPackage = $("spruceImportLastPackage").checked;
   spruceImportDraft.note = normalizeSpaces($("spruceImportNote").value);
   const requestedByKey = new Map((spruceImportDraft.rows || []).map(row => [row.key, Number(row.requestedLf || 0)]));
 
@@ -3396,6 +3441,7 @@ async function confirmSpruceImport() {
     p_source_project_number: spruceImportDraft.parsed.projectNumber || null,
     p_source_revision: spruceImportDraft.parsed.revision || null,
     p_source_level_name: spruceImportDraft.parsed.levelName || null,
+    p_is_last_package: spruceImportDraft.lastPackage === true,
     p_items: items
   });
 
@@ -3406,6 +3452,7 @@ async function confirmSpruceImport() {
     source_revision: spruceImportDraft.parsed.revision || "",
     source_level_name: spruceImportDraft.parsed.levelName || "",
     note: spruceImportDraft.note || "",
+    last_package: spruceImportDraft.lastPackage === true,
     total_lf: items.reduce((sum, item) => sum + Number(item.quantity_lf || 0), 0),
     items: items.map(item => ({ material: item.material_name, lf: item.quantity_lf }))
   });
@@ -3419,6 +3466,7 @@ async function confirmSpruceImport() {
     $("spruceImportStatus").textContent = `${savedCode} saved in Spruce.`;
     $("spruceImportStatus").className = "small-note import-ok";
     $("spruceOrderNote").value = "";
+    $("spruceLastPackage").checked = false;
     $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(activeDelivery.level);
     refreshDeliveryDialogViews();
     setDeliveryActionMode(entireOutstandingInSpruce(activeDelivery.level) ? "deliver" : "spruce");
@@ -3479,6 +3527,18 @@ async function saveSpruceOrder() {
   }
   if (!items.length) return alert("Enter at least one quantity to put in Spruce.");
 
+  const lastPackage = $("spruceLastPackage").checked;
+  if (lastPackage) {
+    const requested = new Map(items.map(item => [item.material.id, item.lf]));
+    const closingLf = (activeDelivery.level.materials || []).reduce((sum, material) => {
+      return sum + Math.max(0, rawForecastRemainingFor(activeDelivery.level, material) - (requested.get(material.id) || 0));
+    }, 0);
+    const message = closingLf > EPSILON
+      ? `Last Package of the Level is checked. This will close ${formatNumber(closingLf)} LF of remaining forecast that is not included in this Spruce order. Continue?`
+      : "Last Package of the Level is checked. This order will close the level forecast. Continue?";
+    if (!confirm(message)) return;
+  }
+
   const orderId = uid();
   const note = normalizeSpaces($("spruceOrderNote").value);
   let headerInserted = false;
@@ -3491,6 +3551,7 @@ async function saveSpruceOrder() {
       source_project_number: null,
       source_revision: null,
       source_level_name: null,
+      is_last_package: lastPackage,
       entered_at: new Date().toISOString(),
       note: note || null,
       version: 1
@@ -3513,12 +3574,14 @@ async function saveSpruceOrder() {
   await recordActivity("level", activeDelivery.level.id, "put_in_spruce", {
     delivery_code: deliveryCode,
     note,
+    last_package: lastPackage,
     items: items.map(item => ({ material: item.material.material, lf: item.lf })),
     total_lf: items.reduce((sum, item) => sum + item.lf, 0)
   });
   await refreshActiveDelivery();
   if (activeDelivery) {
     $("spruceOrderNote").value = "";
+    $("spruceLastPackage").checked = false;
     $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(activeDelivery.level);
     refreshDeliveryDialogViews();
     setDeliveryActionMode(entireOutstandingInSpruce(activeDelivery.level) ? "deliver" : "spruce");
@@ -4486,6 +4549,11 @@ function wireEvents() {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     });
+  });
+  $("spruceImportLastPackage").addEventListener("change", event => {
+    if (!spruceImportDraft) return;
+    spruceImportDraft.lastPackage = event.target.checked;
+    updateSpruceImportValidationUi();
   });
   $("spruceImportNote").addEventListener("input", event => { if (spruceImportDraft) spruceImportDraft.note = event.target.value; });
   $("spruceImportItems").addEventListener("input", event => {

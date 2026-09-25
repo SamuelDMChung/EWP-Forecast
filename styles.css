@@ -1412,3 +1412,44 @@ select { font: inherit; }
   outline: 3px solid var(--accent-soft);
   outline-offset: 2px;
 }
+
+/* V0.26 final-package delivery controls */
+.spruce-entry-meta-three,
+.spruce-import-meta-three {
+  grid-template-columns: minmax(150px, .55fr) minmax(185px, .65fr) minmax(260px, 1.35fr);
+}
+.checkbox-field.last-package-field {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.checkbox-field.last-package-field > span {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+}
+.checkbox-field.last-package-field input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0 0 10px 2px;
+  accent-color: var(--accent);
+}
+.spruce-order-last-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 10px;
+  font-weight: 850;
+}
+@media (max-width: 720px) {
+  .spruce-entry-meta-three,
+  .spruce-import-meta-three { grid-template-columns: 1fr; }
+  .checkbox-field.last-package-field { flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px; }
+  .checkbox-field.last-package-field input[type="checkbox"] { margin: 0; }
+}

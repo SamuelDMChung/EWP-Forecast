@@ -1,6 +1,21 @@
-# EWP Material Forecast — V0.25
+# EWP Material Forecast — V0.26
 
 **Developed by Samuel Chung @ Griff**
+
+
+## V0.26 changes
+
+V0.26 makes delivery-PDF quantities operationally authoritative while preserving the original project takeoff as the forecast reference.
+
+- Delivery PDF quantities that exceed the current forecast now show a clear **warning** but no longer block confirmation. The full imported quantity is allowed into Spruce and therefore flows into committed inventory demand.
+- Adds a visible **Last Package of the Level** checkbox between Delivery Name and Spruce Order Note. The same flag is shown in the PDF review dialog.
+- When **Last Package of the Level** is checked, saving that Spruce package closes all remaining uncommitted forecast for the level without rewriting the original Javelin takeoff quantities.
+- A level with its last package still in Spruce remains **ONGOING**. After all Spruce material is delivered, it becomes **COMPLETED**, even if the actual final quantity was lower than the original forecast.
+- If the actual package exceeds the original forecast, the original takeoff remains visible for reference while the larger actual Spruce/delivered quantity is accepted and counted in inventory demand.
+- Open Spruce orders marked as the last package display a **LAST PACKAGE** badge; Entry History records the flag as well.
+- Database migration required: run **`supabase_v0_26.sql`** before deploying the V0.26 frontend. The file is cumulative/idempotent relative to the existing app schema and supersedes the older bundled V0.17/V0.19/V0.20 migration files.
+- Package cleanup: removed the empty `vendor/` folder and older `supabase_v0_17.sql`, `supabase_v0_19.sql`, and `supabase_v0_20.sql`. The package now keeps only the current `supabase_v0_26.sql`.
+- Frontend cache-busting updated to `v=0.26`.
 
 
 ## V0.25 changes
@@ -59,7 +74,7 @@ V0.20 adds business-facing delivery names and a Javelin **Layout Material List P
 - Ignores hanger/hardware rows and Web Stiffeners. EWP rows including TJI, LVL/Microllam, LSL/TimberStrand, PSL/Parallam and Rim Board are considered.
 - Matches imported EWP to the project using the existing **product + size** identity rule. `WSO`, `SSS`, grade text such as `1.3E`, and manufacturer wording do not create a separate LVL/LSL/PSL stock identity. `ML = LVL`; `TS = LSL` remains supported for POs.
 - The import review shows the PDF material, matched project material, imported LF, available LF, editable Put in Spruce LF and match/error status before anything is saved.
-- Blocks confirmation when the PDF is for a different project/level, an EWP material cannot be matched, or the imported quantity exceeds the amount still available for that delivery. A revision mismatch is shown as a warning rather than silently ignored.
+- V0.20 originally blocked confirmation when an imported quantity exceeded the remaining forecast. **V0.26 supersedes that rule:** project/level mismatches and unmatched materials still block, while quantity overages are warnings and may be confirmed.
 - Preserves the original PDF filename/project/revision/level on the Spruce order for reference and in Entry History.
 - If the entire outstanding level is already committed, the top **Put in Spruce** action changes to **Remove from Spruce**. That action returns all open Spruce batches for the level to Forecast Remaining; individual batches can still be removed from the open-order list.
 - Adds `EWP_FORECAST_HANDOFF.md` as the canonical workflow/development handoff for future chat migrations.
@@ -149,7 +164,7 @@ V0.16 expands the V0.15 project forecast into the inventory / purchasing workflo
 
 ### Required Supabase change for V0.16
 
-The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.20 package, run **`supabase_v0_20.sql`**. It includes the V0.16/V0.17 inventory and purchasing schema plus the V0.19 Spruce-order tables and V0.20 delivery-name/import additions, so the older migration files do not need to be run separately for a fresh upgrade.
+The historical V0.16 package used `supabase_v0_16.sql`. For the current package, run **`supabase_v0_26.sql`**. It carries forward the existing inventory/purchasing/Spruce schema and adds the V0.26 last-package / over-forecast rules, so the older bundled migration files are no longer needed.
 
 ## V0.15 changes
 
@@ -311,9 +326,7 @@ Put these files directly in the repository root:
 - `config.mjs`
 - `purchase_parser.mjs`
 - `delivery_parser.mjs`
-- `supabase_v0_20.sql` (**run this in Supabase SQL Editor before deploying V0.20**)
-- `supabase_v0_19.sql` (older migration reference only)
-- `supabase_v0_17.sql` (older migration reference only)
+- `supabase_v0_26.sql` (**run this in Supabase SQL Editor before deploying V0.26**)
 - `.nojekyll`
 - `.gitignore`
 - `README.md`

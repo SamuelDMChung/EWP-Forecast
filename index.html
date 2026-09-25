@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>EWP Material Forecast</title>
-  <link rel="stylesheet" href="styles.css?v=0.25" />
+  <link rel="stylesheet" href="styles.css?v=0.26" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.25 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.26 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -373,8 +373,9 @@
       <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" hidden style="display:none" />
 
       <section id="spruceEntryPanel" class="spruce-action-panel">
-        <div class="form-grid delivery-transaction-meta spruce-entry-meta">
+        <div class="form-grid delivery-transaction-meta spruce-entry-meta spruce-entry-meta-three">
           <label>Delivery Name<input id="spruceDeliveryCode" placeholder="e.g. L3D1" autocomplete="off" /></label>
+          <label class="checkbox-field last-package-field"><span>Last Package of the Level</span><input id="spruceLastPackage" type="checkbox" /></label>
           <label>Spruce Order Note<input id="spruceOrderNote" placeholder="Optional — truck, phase, order note, etc." /></label>
         </div>
 
@@ -436,8 +437,9 @@
         <button value="cancel" class="icon-button" aria-label="Close">×</button>
       </div>
 
-      <div class="form-grid delivery-transaction-meta spruce-import-meta">
+      <div class="form-grid delivery-transaction-meta spruce-import-meta spruce-import-meta-three">
         <label>Delivery Name<input id="spruceImportDeliveryCode" autocomplete="off" /></label>
+        <label class="checkbox-field last-package-field"><span>Last Package of the Level</span><input id="spruceImportLastPackage" type="checkbox" /></label>
         <label>Note<input id="spruceImportNote" placeholder="Optional — truck, phase, order note, etc." /></label>
       </div>
 
@@ -581,6 +583,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.mjs?v=0.25"></script>
+  <script type="module" src="app.mjs?v=0.26"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # EWP Material Forecast — Development Handoff
 
-**Canonical baseline:** V0.25  
+**Canonical baseline:** V0.26  
 **Project owner / developer credit:** Samuel Chung @ Griff
 
 This file is the canonical workflow and development handoff for future ChatGPT/code migrations. When continuing development in a new chat, upload the latest ZIP and tell ChatGPT to read this file before changing code.
@@ -191,22 +191,21 @@ Projects & Materials has a field selector plus one search input:
 
 ## 10. Database / deployment
 
-Current schema version: **20**.
+Current schema version: **26**.
 
-V0.24 introduces **no database migration**. If the database is already on V0.20 schema, deploy the V0.24 frontend only.
+V0.26 **does require a database migration**. Run:
 
-For a database older than V0.20, run:
+`supabase_v0_26.sql`
 
-`supabase_v0_20.sql`
+in the Supabase SQL Editor **before** deploying the V0.26 frontend.
 
-in the Supabase SQL Editor before deploying V0.24.
+The V0.26 migration is the only SQL file kept in the package. It supersedes the older bundled V0.17/V0.19/V0.20 files and preserves the existing inventory/purchasing/Spruce setup while adding:
+- `spruce_orders.is_last_package`
+- automatic single-last-package enforcement per level
+- database acceptance of Spruce quantities above the original forecast
+- the V0.26 `upsert_spruce_order_import(...)` signature with `p_is_last_package`
 
-The migration is cumulative/idempotent and includes prior inventory/purchasing/Spruce schema. V0.20 adds:
-- `delivery_code` and source-PDF metadata on `spruce_orders`
-- per-level case-insensitive unique Delivery Name protection
-- `upsert_spruce_order_import(...)` for atomic create/revise of PDF-imported Spruce packages
-
-GitHub Pages does not run SQL files automatically. SQL files may remain in the repository as migration/reference files.
+GitHub Pages does not run SQL files automatically; the SQL must be run manually in Supabase before the frontend is pushed.
 
 ## 11. Coding / UX principles
 
@@ -231,3 +230,23 @@ Implemented in V0.25:
 No SQL migration is required for V0.25.
 
 - V0.25 packaging correction: the visible version label is 0.25 and `index.html` loads `styles.css?v=0.25` plus `app.mjs?v=0.25` to reduce stale GitHub Pages/browser caching.
+
+
+### V0.26 delivery reality / final-package rules
+
+- The Javelin project takeoff remains the forecast reference (`materials.original_lf`). Do not silently rewrite that reference merely because an actual delivery package differs.
+- A delivery PDF may contain more LF than the current forecast. This is a **warning, not a blocker**. The full package quantity can be put in Spruce and counts as committed inventory demand.
+- `outstandingFor()` must never understate an over-forecast open Spruce quantity; while an overage is open, outstanding is at least the open Spruce LF.
+- `spruce_orders.is_last_package = true` closes future uncommitted forecast for the entire level. It does not mark the level complete while material is still in Spruce.
+- While a last package exists, `forecastRemainingFor()` returns zero for that level. `outstandingFor()` represents only open Spruce material. Once all Spruce material is delivered, the level becomes COMPLETED even when actual delivered LF is lower than the original takeoff.
+- Removing the last-package Spruce order reopens the original remaining forecast automatically because closure is derived from the order flag rather than destructive edits to material takeoff quantities.
+- Revising the last package keeps the same reversible behavior. Only one Spruce order per level should hold the last-package flag at a time.
+- PDF project/level mismatches and unmatched materials remain blockers. Quantity overages are warning-only.
+- The Manage Delivery UI includes **Last Package of the Level** between Delivery Name and Note, and the PDF review dialog mirrors that setting.
+
+### V0.26 package cleanup
+
+- Removed the empty `vendor/` folder.
+- Removed historical `supabase_v0_17.sql`, `supabase_v0_19.sql`, and `supabase_v0_20.sql`.
+- Keep only the current `supabase_v0_26.sql` migration/reference file going forward unless a future migration replaces it.
+- `index.html` cache-busts the top-level frontend assets with `v=0.26`.
