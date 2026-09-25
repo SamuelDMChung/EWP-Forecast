@@ -229,3 +229,5 @@ Implemented in V0.25:
 - Put in Spruce mode keeps all main buttons visible. Quick actions are renamed to Use Entire Forecast and Clear Quantities for clarity.
 
 No SQL migration is required for V0.25.
+
+- V0.25 packaging correction: the visible version label is 0.25 and `index.html` loads `styles.css?v=0.25` plus `app.mjs?v=0.25` to reduce stale GitHub Pages/browser caching.

@@ -12,6 +12,7 @@ V0.25 is a UX cleanup build focused only on the approved button/layout simplific
 - **Put in Spruce** / **Deliver** remains a compact tab-style mode switch in the Manage Delivery window.
 - Put in Spruce mode keeps the main buttons visible, but the quick actions are clearer: **Use Entire Forecast** and **Clear Quantities**.
 - No Supabase schema, RLS, Realtime, or SQL change is required for V0.25. Deploy the frontend files only.
+- The visible app version label is correctly set to **Version 0.25**, and top-level CSS/JS URLs include a `v=0.25` cache-busting suffix so GitHub Pages/browser caches fetch the current build.
 
 
 ## V0.23 changes
