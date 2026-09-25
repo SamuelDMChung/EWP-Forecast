@@ -1380,3 +1380,17 @@ select { font: inherit; }
   .spruce-delivery-panel-head { align-items: stretch; flex-direction: column; }
   .spruce-delivery-panel-head .button { width: 100%; }
 }
+
+
+/* V0.24: one reliable delivery-PDF control; the native file input stays completely hidden. */
+.file-picker-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+}
+.file-picker-label:focus-visible {
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}

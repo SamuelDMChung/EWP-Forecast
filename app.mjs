@@ -439,22 +439,34 @@ async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
 
 async function loadPdfJs() {
   if (pdfjsLib) return pdfjsLib;
+
+  // Keep PDF.js current. V0.23 used 4.10.38, which is unreliable in newer Chromium builds.
+  // Load only when a PDF is actually imported, and keep a second CDN as a fallback.
   const candidates = [
-    "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs",
-    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs"
+    {
+      lib: "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.min.mjs",
+      worker: "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.min.mjs"
+    },
+    {
+      lib: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.3.289/pdf.min.mjs",
+      worker: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.3.289/pdf.worker.min.mjs"
+    }
   ];
+
   let lastError;
-  for (const url of candidates) {
+  for (const candidate of candidates) {
     try {
-      const lib = await import(url);
-      lib.GlobalWorkerOptions.workerSrc = url.replace(/pdf\.min\.mjs$/, "pdf.worker.min.mjs");
+      const lib = await import(candidate.lib);
+      lib.GlobalWorkerOptions.workerSrc = candidate.worker;
       pdfjsLib = lib;
       return pdfjsLib;
     } catch (error) {
       lastError = error;
+      console.warn("PDF.js source failed to load", candidate.lib, error);
     }
   }
-  throw new Error(`PDF reader could not load. Your network may block both PDF.js CDNs. ${lastError?.message || ""}`);
+
+  throw new Error(`PDF reader could not load. Both PDF.js sources were unavailable. ${lastError?.message || ""}`);
 }
 
 function setTab(tabName) {
@@ -2824,24 +2836,6 @@ function scheduleHistoryRefresh() {
   }, 450);
 }
 
-function openSprucePdfPicker() {
-  const input = $("sprucePdfFile");
-  if (!input) return;
-  // Reset before opening so selecting the same PDF again always fires a change event.
-  input.value = "";
-  try {
-    if (typeof input.showPicker === "function") input.showPicker();
-    else input.click();
-  } catch (error) {
-    // showPicker can be unsupported/restricted in some browsers; a direct click is the fallback.
-    try { input.click(); }
-    catch (fallbackError) {
-      console.error(error, fallbackError);
-      alert("The PDF file picker could not open. Please try again.");
-    }
-  }
-}
-
 async function startLiveSync() {
   realtimeState = "starting";
   const started = await startRealtime({
@@ -4437,8 +4431,15 @@ function wireEvents() {
     event.target.value = String(event.target.value || "").toUpperCase().replace(/\s+/g, "");
     try { event.target.setSelectionRange(caret, caret); } catch {}
   });
-  $("chooseSprucePdf").addEventListener("click", openSprucePdfPicker);
-  $("chooseSprucePdfFromOrders").addEventListener("click", openSprucePdfPicker);
+  [$("chooseSprucePdf"), $("chooseSprucePdfFromOrders")].forEach(label => {
+    label?.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        $("sprucePdfFile").value = "";
+        $("sprucePdfFile").click();
+      }
+    });
+  });
   $("sprucePdfFile").addEventListener("change", async event => {
     const input = event.currentTarget;
     const file = input.files?.[0];
@@ -4689,7 +4690,10 @@ async function init() {
   wireEvents();
   updateProjectTypeUi();
   renderCurrentUser();
-  setAuthGateVisible(true);
+  // Keep the login gate hidden while we check the persisted Supabase session.
+  // Showing it before restoreSession() completes causes a misleading sign-in flash
+  // on every normal refresh even when the saved session is still valid.
+  setAuthGateVisible(false);
   renderAll();
   try {
     const session = await ensureAuthenticated();

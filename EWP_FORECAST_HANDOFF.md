@@ -1,6 +1,6 @@
 # EWP Material Forecast — Development Handoff
 
-**Canonical baseline:** V0.22  
+**Canonical baseline:** V0.24  
 **Project owner / developer credit:** Samuel Chung @ Griff
 
 This file is the canonical workflow and development handoff for future ChatGPT/code migrations. When continuing development in a new chat, upload the latest ZIP and tell ChatGPT to read this file before changing code.
@@ -116,7 +116,9 @@ Rules:
 - Preserve PDF filename, project number, revision, and level name on the Spruce order for reference.
 - Filename/report Delivery Name such as `L3D1` should be recognized when present.
 - Re-importing the same open Delivery Name updates/revises that package atomically.
-- The delivery-PDF picker must reset before each open so selecting the same PDF again still triggers parsing. Prefer native `showPicker()` with a direct file-input click fallback.
+- The delivery-PDF UI must show only one import control per context. Keep the real file input hidden and use a native `<label for="sprucePdfFile">` as the visible import control; do not expose a second browser “Choose File” control.
+- Clear the file input after every selection/import attempt so selecting the same PDF again still triggers parsing.
+- PDF.js is loaded on demand using the current 6.3.289 build (jsDelivr first, cdnjs fallback); do not regress to 4.10.38 because newer Chromium builds can fail with that older version.
 
 Validated sample for V0.20:
 - `TC25161_R1 - Sherman Rd - Apartment - L3D1 Test.pdf`
@@ -172,11 +174,18 @@ Projects & Materials has a field selector plus one search input:
 - **Customer / Project # / Project Name / Revision**: partial match within the selected field only.
 
 
-### Authentication persistence (V0.22)
+### Delivery PDF picker / reader hardening (V0.24)
+
+- One visible file-import control only; the native file input stays hidden in HTML.
+- Normal pointer activation uses a native label-to-file-input relationship instead of `showPicker()` / scripted click.
+- PDF.js updated from 4.10.38 to 6.3.289 with two CDN sources.
+- No database migration is required.
+
+### Authentication persistence (V0.23)
 
 - Supabase access/refresh tokens continue to be stored in browser `localStorage`.
 - A valid saved session must survive a normal page refresh and browser reopen.
-- Startup must hide the full-screen login gate immediately after `restoreSession()` returns a valid authenticated user.
+- The login gate starts hidden and must stay hidden while `restoreSession()` checks browser storage. It is shown only when no valid saved session exists. This prevents a misleading sign-in popup/flash on every refresh.
 - Do not require a fresh password login merely because the page was refreshed.
 - Explicit Sign out, revoked/invalid sessions, or browser storage being cleared should still return the user to the login gate.
 
@@ -184,13 +193,13 @@ Projects & Materials has a field selector plus one search input:
 
 Current schema version: **20**.
 
-V0.22 introduces **no database migration**. If the database is already on V0.20 schema, deploy the V0.22 frontend only.
+V0.24 introduces **no database migration**. If the database is already on V0.20 schema, deploy the V0.24 frontend only.
 
 For a database older than V0.20, run:
 
 `supabase_v0_20.sql`
 
-in the Supabase SQL Editor before deploying V0.22.
+in the Supabase SQL Editor before deploying V0.24.
 
 The migration is cumulative/idempotent and includes prior inventory/purchasing/Spruce schema. V0.20 adds:
 - `delivery_code` and source-PDF metadata on `spruce_orders`

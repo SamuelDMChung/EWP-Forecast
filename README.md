@@ -1,16 +1,38 @@
-# EWP Material Forecast — V0.22
+# EWP Material Forecast — V0.24
 
 **Developed by Samuel Chung @ Griff**
 
 
+## V0.24 changes
+
+V0.24 cleans up and hardens the Javelin delivery-PDF import flow.
+
+- Removes the duplicate visible browser **Choose File** control. The delivery dialog now presents only the intended **Import Delivery PDF** / **Import / Revise Delivery PDF** controls.
+- The visible import controls are now native labels tied directly to the real PDF file input, avoiding the prior `showPicker()` / scripted-click picker path for normal mouse/touch use.
+- The underlying file input is hidden directly in the HTML so a stale stylesheet cannot expose the browser's raw **Choose File** control.
+- Upgrades the on-demand PDF reader from PDF.js **4.10.38** to **6.3.289**, with jsDelivr first and cdnjs fallback. This avoids current Chromium compatibility problems seen with the older 4.10.38 build.
+- Same-file re-import remains supported because the file input is cleared after every selection/import attempt.
+- No Supabase schema, RLS, Realtime, or SQL change is required for V0.24. Deploy the frontend files only.
+
+
+## V0.23 changes
+
+V0.23 fixes the remaining refresh-time login popup/flash from V0.22.
+
+- The login gate now starts hidden in the HTML instead of being visible on the first paint.
+- Startup checks `restoreSession()` before deciding whether to show the login gate. A valid saved Supabase session therefore refreshes directly into the app without briefly showing the sign-in dialog.
+- If no valid saved session exists, the normal sign-in dialog still opens. Explicit sign-out and invalid/revoked sessions are unchanged.
+- No Supabase schema, RLS, Realtime, or SQL change is required for V0.23. Deploy the frontend files only.
+
+
 ## V0.22 changes
 
-V0.22 fixes saved Supabase login restoration on page refresh.
+V0.22 added saved Supabase session restoration on page refresh.
 
-- Fixes a startup UI bug where a valid saved Supabase session was restored correctly but the full-screen login gate was never dismissed. This made users appear to be logged out after every browser refresh even though the saved session still existed.
-- On startup, a valid restored session now immediately restores the signed-in identity and hides the login gate.
-- Normal sign-out behavior is unchanged. Expired/revoked sessions still fall back to the login screen.
-- No Supabase schema, RLS, Realtime, or SQL change is required for V0.22. Deploy the frontend files only.
+- A valid session stored in browser `localStorage` is restored on startup instead of requiring the password again.
+- Startup restores the signed-in identity and hides the login gate after session restoration.
+- V0.22 still showed the login gate before restoration completed, which caused a misleading sign-in popup/flash on every refresh; V0.23 removes that flash.
+- No Supabase schema, RLS, Realtime, or SQL change is required for V0.22.
 
 
 ## V0.21 changes
