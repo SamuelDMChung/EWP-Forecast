@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.19 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.20 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -360,10 +360,23 @@
         <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
         <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver Spruce Order</button>
       </div>
+      <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" class="hidden" />
 
       <section id="spruceEntryPanel" class="spruce-action-panel">
         <div class="form-grid delivery-transaction-meta spruce-entry-meta">
+          <label>Delivery Name<input id="spruceDeliveryCode" placeholder="e.g. L3D1" autocomplete="off" /></label>
           <label>Spruce Order Note<input id="spruceOrderNote" placeholder="Optional — truck, phase, order note, etc." /></label>
+        </div>
+
+        <div class="spruce-import-card">
+          <div>
+            <strong>Import Delivery Material List</strong>
+            <p class="small-note">Reads EWP material from a Javelin Layout Material List PDF. Hangers and web stiffeners are ignored.</p>
+          </div>
+          <div class="spruce-import-actions">
+            <button id="chooseSprucePdf" type="button" class="button secondary">Import Delivery PDF</button>
+            <span id="spruceImportStatus" class="small-note"></span>
+          </div>
         </div>
 
         <div class="delivery-actions">
@@ -385,7 +398,10 @@
           <label>Actual Delivery Date<input id="deliveryDate" type="date" /></label>
           <label>Delivery Note<input id="deliveryNote" placeholder="Optional — truck, site note, etc." /></label>
         </div>
-        <p class="small-note spruce-delivery-help">Choose an open Spruce order below. Delivery always moves that entire Spruce order to Delivered.</p>
+        <div class="spruce-delivery-panel-head">
+          <p class="small-note spruce-delivery-help">Choose an open Spruce order below. Delivery always moves that entire Spruce order to Delivered.</p>
+          <button id="chooseSprucePdfFromOrders" type="button" class="button secondary">Import / Revise Delivery PDF</button>
+        </div>
         <div id="openSpruceOrders" class="spruce-order-list"></div>
       </section>
 
@@ -396,6 +412,32 @@
       </div>
 
       <div id="deliveryHistory" class="history"></div>
+    </form>
+  </dialog>
+
+  <dialog id="spruceImportReviewDialog" class="dialog spruce-import-review-dialog" aria-labelledby="spruceImportReviewTitle">
+    <form method="dialog" id="spruceImportReviewForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">IMPORT DELIVERY PDF</p>
+          <h2 id="spruceImportReviewTitle">Review Spruce Delivery</h2>
+          <p id="spruceImportReviewSummary" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid delivery-transaction-meta spruce-import-meta">
+        <label>Delivery Name<input id="spruceImportDeliveryCode" autocomplete="off" /></label>
+        <label>Note<input id="spruceImportNote" placeholder="Optional — truck, phase, order note, etc." /></label>
+      </div>
+
+      <div id="spruceImportWarnings" class="spruce-import-warnings hidden"></div>
+      <div id="spruceImportItems"></div>
+
+      <div class="dialog-footer">
+        <button value="cancel" class="button ghost">Back</button>
+        <button id="confirmSpruceImport" type="button" class="button primary">Put These Materials in Spruce</button>
+      </div>
     </form>
   </dialog>
 

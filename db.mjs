@@ -88,6 +88,33 @@ export async function deleteRows(table, params) {
   return request(table, { method: "DELETE", params, prefer: "return=representation" });
 }
 
+
+export async function rpc(functionName, body = {}) {
+  const accessToken = await getAccessToken();
+  if (!accessToken) throw new Error("Authentication required. Please sign in again.");
+  const response = await fetch(`${REST_URL}/rpc/${encodeURIComponent(functionName)}`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body || {})
+  });
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { data = text; }
+  }
+  if (!response.ok) {
+    const message = data?.message || data?.details || data?.hint || (typeof data === "string" ? data : "") || `${response.status} ${response.statusText}`;
+    throw new Error(`Supabase RPC ${functionName} failed: ${message}`);
+  }
+  return data;
+}
+
 export async function logActivity(entityType, entityId, action, details = {}) {
   try {
     await insertRows("activity_log", {

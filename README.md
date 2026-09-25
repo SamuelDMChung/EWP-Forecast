@@ -1,7 +1,28 @@
-# EWP Material Forecast — V0.19
+# EWP Material Forecast — V0.20
 
 **Developed by Samuel Chung @ Griff**
 
+
+## V0.20 changes
+
+V0.20 adds business-facing delivery names and a Javelin **Layout Material List PDF → Spruce** import workflow while preserving the quantity-based V0.19 Spruce model.
+
+- Adds automatic delivery names such as **L3D1, L3D2, L3D3** based on the active level. The Delivery Name is editable for nonstandard cases.
+- Delivery numbering represents the actual customer/shipping package, **not database actions**. Removing L3D2 from Spruce does not permanently consume that name; re-entering/re-importing the same package can still be L3D2.
+- Prevents two active/delivered Spruce orders with the same Delivery Name for one level. Re-importing an **open** L3D2 updates/revises that same delivery instead of creating a duplicate. A delivered package must be undone before it can be revised.
+- Adds **Import Delivery PDF** in Put in Spruce and **Import / Revise Delivery PDF** beside open Spruce orders.
+- Reads Weyerhaeuser/Javelin Layout Material List rows using **Length × Net Qty = LF**. `Plies` is informational and is not multiplied again.
+- Ignores hanger/hardware rows and Web Stiffeners. EWP rows including TJI, LVL/Microllam, LSL/TimberStrand, PSL/Parallam and Rim Board are considered.
+- Matches imported EWP to the project using the existing **product + size** identity rule. `WSO`, `SSS`, grade text such as `1.3E`, and manufacturer wording do not create a separate LVL/LSL/PSL stock identity. `ML = LVL`; `TS = LSL` remains supported for POs.
+- The import review shows the PDF material, matched project material, imported LF, available LF, editable Put in Spruce LF and match/error status before anything is saved.
+- Blocks confirmation when the PDF is for a different project/level, an EWP material cannot be matched, or the imported quantity exceeds the amount still available for that delivery. A revision mismatch is shown as a warning rather than silently ignored.
+- Preserves the original PDF filename/project/revision/level on the Spruce order for reference and in Entry History.
+- If the entire outstanding level is already committed, the top **Put in Spruce** action changes to **Remove from Spruce**. That action returns all open Spruce batches for the level to Forecast Remaining; individual batches can still be removed from the open-order list.
+- Adds `EWP_FORECAST_HANDOFF.md` as the canonical workflow/development handoff for future chat migrations.
+
+### Required Supabase change for V0.20
+
+Run **`supabase_v0_20.sql` before deploying the V0.20 frontend**. It is cumulative/idempotent and includes the prior inventory, purchasing and V0.19 Spruce-batch schema. V0.20 adds delivery-name/source metadata, a per-level unique Delivery Name rule, and an atomic PDF-import/revision database function.
 
 ## V0.19 changes
 
@@ -84,7 +105,7 @@ V0.16 expands the V0.15 project forecast into the inventory / purchasing workflo
 
 ### Required Supabase change for V0.16
 
-The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.19 package, run **`supabase_v0_19.sql`**. It includes the V0.16/V0.17 inventory and purchasing schema plus the V0.19 Spruce-order tables, so the older migration files do not need to be run separately for a fresh upgrade.
+The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.20 package, run **`supabase_v0_20.sql`**. It includes the V0.16/V0.17 inventory and purchasing schema plus the V0.19 Spruce-order tables and V0.20 delivery-name/import additions, so the older migration files do not need to be run separately for a fresh upgrade.
 
 ## V0.15 changes
 
@@ -245,11 +266,14 @@ Put these files directly in the repository root:
 - `realtime.mjs`
 - `config.mjs`
 - `purchase_parser.mjs`
-- `supabase_v0_19.sql` (**run this in Supabase SQL Editor before deploying V0.19**)
+- `delivery_parser.mjs`
+- `supabase_v0_20.sql` (**run this in Supabase SQL Editor before deploying V0.20**)
+- `supabase_v0_19.sql` (older migration reference only)
 - `supabase_v0_17.sql` (older migration reference only)
 - `.nojekyll`
 - `.gitignore`
 - `README.md`
+- `EWP_FORECAST_HANDOFF.md`
 
 Commit and push through GitHub Desktop. GitHub Pages will redeploy from `main` / `/(root)`.
 

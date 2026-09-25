@@ -1,18 +1,20 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
 import { parsePurchaseWorkbook, normalizePoMaterialDescription } from "./purchase_parser.mjs";
-import { loadCloudRows, loadActivityRows, insertRows, updateRows, deleteRows, logActivity } from "./db.mjs";
+import { parseDeliveryMaterialReportLines } from "./delivery_parser.mjs";
+import { loadCloudRows, loadActivityRows, insertRows, updateRows, deleteRows, logActivity, rpc } from "./db.mjs";
 import { restoreSession, signInWithPassword, signOut, getCurrentUser, getLastEmail } from "./auth.mjs";
 import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs";
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
 const EPSILON = 0.0001;
 const HISTORY_PAGE_SIZE = 100;
 
 let state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], purchaseOrders: [], incomingOrders: [] };
 let draft = null;
 let purchaseDraft = null;
+let spruceImportDraft = null;
 let pdfjsLib = null;
 let activeDelivery = null;
 let activeEditProject = null;
@@ -320,6 +322,11 @@ function mapCloudRows(rows) {
     const order = {
       id: row.id,
       levelId: row.level_id,
+      deliveryCode: row.delivery_code || "",
+      sourceFileName: row.source_file_name || "",
+      sourceProjectNumber: row.source_project_number || "",
+      sourceRevision: row.source_revision || "",
+      sourceLevelName: row.source_level_name || "",
       enteredAt: row.entered_at || row.created_at || "",
       note: row.note || "",
       deliveredAt: row.delivered_at || "",
@@ -394,7 +401,7 @@ function mapCloudRows(rows) {
   return { version: SCHEMA_VERSION, projects, inventoryMaterials, purchaseOrders, incomingOrders };
 }
 function hasOpenDialog() {
-  return $("deliveryDialog")?.open || $("materialExclusionDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
+  return $("deliveryDialog")?.open || $("spruceImportReviewDialog")?.open || $("materialExclusionDialog")?.open || $("projectEditDialog")?.open || $("deleteProjectDialog")?.open || $("projectReviewDialog")?.open;
 }
 
 async function syncFromCloud({ silent = false, rebindActive = false } = {}) {
@@ -585,6 +592,66 @@ function deliveredSpruceOrders(level) {
 
 function spruceOrderTotal(order) {
   return (order.items || []).reduce((sum, item) => sum + Number(item.lf || 0), 0);
+}
+
+function normalizeDeliveryCode(value = "") {
+  return normalizeSpaces(value).replace(/\s+/g, "").toUpperCase();
+}
+
+function levelNumberFromName(levelName = "") {
+  const text = normalizeSpaces(levelName).toUpperCase();
+  const explicit = text.match(/\bL\s*(\d+)\b/) || text.match(/\bLEVEL\s*(\d+)\b/);
+  if (explicit) return Number(explicit[1]);
+  if (/\bMAIN\b/.test(text)) return 1;
+  if (/\b(?:SECOND|2ND)\b/.test(text)) return 2;
+  if (/\b(?:THIRD|3RD)\b/.test(text)) return 3;
+  return null;
+}
+
+function levelDeliveryBase(levelName = "") {
+  const text = normalizeSpaces(levelName).toUpperCase();
+  const explicitL = text.match(/\bL\s*(\d+)\b/);
+  if (explicitL) return `L${explicitL[1]}`;
+  const levelNumber = text.match(/\bLEVEL\s*(\d+)\b/);
+  if (levelNumber) return `L${levelNumber[1]}`;
+  if (/\bMAIN\b/.test(text)) return "MF";
+  if (/\b(?:SECOND|2ND)\b/.test(text)) return "L2";
+  if (/\b(?:THIRD|3RD)\b/.test(text)) return "L3";
+  if (/\bROOF\b/.test(text)) return "R";
+  const compact = text.replace(/[^A-Z0-9]/g, "");
+  return compact.slice(0, 4) || "L";
+}
+
+function findSpruceOrderByCode(level, code) {
+  const wanted = normalizeDeliveryCode(code);
+  if (!wanted) return null;
+  return (level?.spruceOrders || []).find(order => normalizeDeliveryCode(order.deliveryCode) === wanted) || null;
+}
+
+function suggestSpruceDeliveryCode(level) {
+  const base = levelDeliveryBase(level?.name || "");
+  let maxNumber = 0;
+  for (const order of level?.spruceOrders || []) {
+    const code = normalizeDeliveryCode(order.deliveryCode);
+    const match = code.match(new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}D(\\d+)$`, "i"));
+    if (match) maxNumber = Math.max(maxNumber, Number(match[1]) || 0);
+  }
+  // Pre-V0.20 Spruce batches have no delivery code. Count them as already-used
+  // delivery slots so an upgraded level with one legacy batch suggests D2, not D1.
+  maxNumber = Math.max(maxNumber, (level?.spruceOrders || []).filter(order => !normalizeDeliveryCode(order.deliveryCode)).length);
+  return `${base}D${maxNumber + 1}`;
+}
+
+function levelForecastRemainingTotal(level) {
+  return (level?.materials || []).reduce((sum, material) => sum + forecastRemainingFor(level, material), 0);
+}
+
+function levelInSpruceTotal(level) {
+  return (level?.materials || []).reduce((sum, material) => sum + inSpruceFor(level, material), 0);
+}
+
+function entireOutstandingInSpruce(level) {
+  return levelInSpruceTotal(level) > EPSILON && levelForecastRemainingTotal(level) <= EPSILON;
 }
 
 function legacyDeliveredFor(level, material) {
@@ -1013,6 +1080,11 @@ function projectToCloudRows(project) {
       spruceOrderRows.push({
         id: spruceOrderId,
         level_id: levelId,
+        delivery_code: order.deliveryCode || null,
+        source_file_name: order.sourceFileName || null,
+        source_project_number: order.sourceProjectNumber || null,
+        source_revision: order.sourceRevision || null,
+        source_level_name: order.sourceLevelName || null,
         entered_at: order.enteredAt || order.createdAt || new Date().toISOString(),
         note: order.note || null,
         delivered_at: order.deliveredAt || null,
@@ -1985,6 +2057,7 @@ function materialProductFamily(normalizedMaterialName) {
   if (/\bLSL\b|\bTIMBERSTRAND\b/.test(normalized)) return "LSL";
   if (/\bLVL\b|\bMICROLLAM\b/.test(normalized)) return "LVL";
   if (/\bPSL\b|\bPARALLAM\b/.test(normalized)) return "PSL";
+  if (/\bRIM\s*BOARD\b|\bRIMBOARD\b/.test(normalized)) return "RIM";
   return "";
 }
 
@@ -2011,7 +2084,8 @@ function stripNonIdentityMaterialDescriptors(materialName) {
   const normalized = normalizePoMaterialDescription(materialName);
   if (!materialMatchSignature(normalized)) return normalized;
   return normalizeSpaces(normalized
-    .replace(/\bSSS\b/gi, " ")
+    .replace(/\b(?:SSS|WSO)\b/gi, " ")
+    .replace(/[()]/g, " ")
     .replace(/\b\d+(?:\.\d+)?E\b/gi, " ")
     .replace(/\bTIMBERSTRAND\b/gi, " ")
     .replace(/\bMICROLLAM\b/gi, " ")
@@ -2486,7 +2560,10 @@ const ACTIVITY_LABELS = {
   update_forecast_date: "Estimated delivery date changed",
   update_level_planning: "Level planning updated",
   put_in_spruce: "Material put in Spruce",
+  import_spruce_delivery_pdf: "Delivery PDF put in Spruce",
+  revise_spruce_delivery_pdf: "Spruce delivery revised from PDF",
   remove_from_spruce: "Spruce order removed",
+  remove_level_from_spruce: "Level removed from Spruce",
   deliver_spruce_order: "Spruce order delivered",
   undo_spruce_delivery: "Spruce delivery undone",
   record_delivery: "Legacy delivery recorded",
@@ -2536,13 +2613,15 @@ function activityEntityContext(row) {
 
 function activityDetailText(row) {
   const d = row?.details && typeof row.details === "object" ? row.details : {};
-  if (["put_in_spruce", "remove_from_spruce", "deliver_spruce_order"].includes(row.action)) {
+  if (["put_in_spruce", "import_spruce_delivery_pdf", "revise_spruce_delivery_pdf", "remove_from_spruce", "deliver_spruce_order"].includes(row.action)) {
     const items = Array.isArray(d.items) ? d.items.map(item => `${item.material}: ${formatNumber(item.lf)} LF`).join("; ") : "";
-    const order = d.spruce_order_number ? `Spruce Order #${d.spruce_order_number}` : "Spruce order";
+    const order = d.delivery_code || "Spruce order";
     const date = d.delivery_date ? `Delivered ${formatDate(d.delivery_date)}` : "";
-    return [order, date, d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF` : "", items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
+    const source = d.source_file_name ? `Source: ${d.source_file_name}` : "";
+    return [order, date, d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF` : "", source, items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
   }
-  if (row.action === "undo_spruce_delivery") return [d.spruce_order_number ? `Spruce Order #${d.spruce_order_number}` : "Spruce order", d.delivery_date ? `Delivery ${formatDate(d.delivery_date)} undone` : "Delivery undone", d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF back in Spruce` : ""].filter(Boolean).join(" · ");
+  if (row.action === "remove_level_from_spruce") return [Array.isArray(d.delivery_codes) ? d.delivery_codes.filter(Boolean).join(", ") : "Open Spruce orders", d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF returned to forecast` : ""].filter(Boolean).join(" · ");
+  if (row.action === "undo_spruce_delivery") return [d.delivery_code || "Spruce order", d.delivery_date ? `Delivery ${formatDate(d.delivery_date)} undone` : "Delivery undone", d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF back in Spruce` : ""].filter(Boolean).join(" · ");
   if (row.action === "record_delivery") {
     const items = Array.isArray(d.items) ? d.items.map(item => `${item.material}: ${formatNumber(item.lf)} LF`).join("; ") : "";
     return [d.delivery_date ? `Delivery ${formatDate(d.delivery_date)}` : "", items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ") || "Delivery recorded";
@@ -2738,14 +2817,28 @@ function deliverySubtitleText(project, level) {
 }
 
 
+function refreshSpruceActionControls() {
+  if (!activeDelivery) return;
+  const fullyCommitted = entireOutstandingInSpruce(activeDelivery.level);
+  const entryButton = $("spruceModeEntry");
+  entryButton.textContent = fullyCommitted ? "Remove from Spruce" : "Put in Spruce";
+  entryButton.dataset.action = fullyCommitted ? "remove" : "spruce";
+  entryButton.classList.toggle("spruce-remove-mode", fullyCommitted);
+
+  const codeInput = $("spruceDeliveryCode");
+  if (codeInput && !normalizeDeliveryCode(codeInput.value)) codeInput.value = suggestSpruceDeliveryCode(activeDelivery.level);
+}
+
 function setDeliveryActionMode(mode) {
-  deliveryActionMode = mode === "deliver" ? "deliver" : "spruce";
+  const fullyCommitted = activeDelivery ? entireOutstandingInSpruce(activeDelivery.level) : false;
+  deliveryActionMode = mode === "deliver" || (mode === "spruce" && fullyCommitted) ? "deliver" : "spruce";
   const entering = deliveryActionMode === "spruce";
   $("spruceModeEntry").classList.toggle("active", entering);
   $("spruceModeDelivery").classList.toggle("active", !entering);
   $("spruceEntryPanel").classList.toggle("hidden", !entering);
   $("spruceDeliveryPanel").classList.toggle("hidden", entering);
   $("saveSpruceOrder").classList.toggle("hidden", !entering);
+  refreshSpruceActionControls();
   if (!entering) renderOpenSpruceOrders();
 }
 
@@ -2760,6 +2853,10 @@ function openDelivery(projectId, levelId) {
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
   $("spruceOrderNote").value = "";
+  $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(level);
+  $("sprucePdfFile").value = "";
+  $("spruceImportStatus").textContent = "";
+  spruceImportDraft = null;
   $("deliveryMaterialSearch").value = "";
   $("clearDeliveryMaterialSearch").classList.add("hidden");
   renderDeliveryItems();
@@ -2814,8 +2911,8 @@ function renderOpenSpruceOrders() {
     return `<article class="spruce-order-card">
       <div class="spruce-order-card-head">
         <div>
-          <strong>Spruce Order</strong>
-          <p class="small-note">Entered ${escapeHtml(formatDateTime(enteredAt))}${order.note ? ` · ${escapeHtml(order.note)}` : ""}</p>
+          <strong>${escapeHtml(order.deliveryCode || "Spruce Order")}</strong>
+          <p class="small-note">Entered ${escapeHtml(formatDateTime(enteredAt))}${order.sourceFileName ? ` · ${escapeHtml(order.sourceFileName)}` : ""}${order.note ? ` · ${escapeHtml(order.note)}` : ""}</p>
         </div>
         <span class="spruce-order-total">${formatNumber(spruceOrderTotal(order))} LF</span>
       </div>
@@ -2935,7 +3032,7 @@ function renderDeliveryHistory() {
       const date = (order.deliveredAt || "").slice(0, 10);
       return `<div class="history-item">
         <div>
-          <strong>${escapeHtml(formatDate(date))} — Spruce Order${order.deliveryNote ? ` · ${escapeHtml(order.deliveryNote)}` : ""}</strong>
+          <strong>${escapeHtml(formatDate(date))} — ${escapeHtml(order.deliveryCode || "Spruce Order")}${order.deliveryNote ? ` · ${escapeHtml(order.deliveryNote)}` : ""}</strong>
           ${(order.items || []).map(item => `<p>${escapeHtml(item.material)}: ${formatNumber(item.lf)} LF</p>`).join("")}
         </div>
         <button type="button" class="history-delete undo-spruce-delivery" data-spruce-order-id="${escapeHtml(order.id)}">Undo delivery</button>
@@ -2974,10 +3071,316 @@ function refreshDeliveryDialogViews() {
   renderDeliveryItems();
   renderOpenSpruceOrders();
   renderDeliveryHistory();
+  refreshSpruceActionControls();
+  if (deliveryActionMode === "spruce" && entireOutstandingInSpruce(activeDelivery.level)) setDeliveryActionMode("deliver");
+}
+
+function spruceImportMetaIssues() {
+  if (!spruceImportDraft || !activeDelivery) return { blockers: [], warnings: [], info: [] };
+  const parsed = spruceImportDraft.parsed;
+  const project = activeDelivery.project;
+  const level = activeDelivery.level;
+  const blockers = [];
+  const warnings = [];
+  const info = [];
+
+  const parsedProject = normalizeSpaces(parsed.projectNumber || "").toUpperCase();
+  const activeProject = normalizeSpaces(project.projectNumber || "").toUpperCase();
+  if (parsedProject && activeProject && parsedProject !== activeProject) {
+    blockers.push(`PDF project ${parsedProject} does not match this project (${activeProject}).`);
+  }
+
+  const parsedRevision = normalizeSpaces(parsed.revision || "").toUpperCase();
+  const activeRevision = normalizeSpaces(project.revision || "").toUpperCase();
+  if (parsedRevision && activeRevision && parsedRevision !== activeRevision) {
+    warnings.push(`PDF revision ${parsedRevision} differs from the project revision ${activeRevision}. Review before confirming.`);
+  }
+
+  const parsedLevelNumber = levelNumberFromName(parsed.levelName || "");
+  const activeLevelNumber = levelNumberFromName(level.name || "");
+  if (parsedLevelNumber !== null && activeLevelNumber !== null && parsedLevelNumber !== activeLevelNumber) {
+    blockers.push(`PDF level ${parsed.levelName} does not match this level (${level.name}).`);
+  } else if (parsed.levelName && parsedLevelNumber === null && normalizeSpaces(parsed.levelName).toLowerCase() !== normalizeSpaces(level.name).toLowerCase()) {
+    warnings.push(`PDF level is ${parsed.levelName}; active level is ${level.name}. Confirm the package is being entered on the intended level.`);
+  }
+
+  const fileCode = normalizeDeliveryCode(parsed.deliveryCode);
+  const fileCodeLevel = fileCode.match(/^L(\d+)D\d+$/i);
+  if (fileCodeLevel && activeLevelNumber !== null && Number(fileCodeLevel[1]) !== activeLevelNumber) {
+    blockers.push(`Delivery name ${fileCode} does not match active level ${level.name}.`);
+  }
+  const selectedCode = normalizeDeliveryCode(spruceImportDraft.deliveryCode);
+  const selectedCodeLevel = selectedCode.match(/^L(\d+)D\d+$/i);
+  if (selectedCodeLevel && activeLevelNumber !== null && Number(selectedCodeLevel[1]) !== activeLevelNumber) {
+    blockers.push(`Selected Delivery Name ${selectedCode} does not match active level ${level.name}.`);
+  }
+  if (fileCode && selectedCode && fileCode !== selectedCode) {
+    warnings.push(`The PDF filename suggests ${fileCode}; you changed the delivery name to ${selectedCode}.`);
+  }
+
+  const existing = findSpruceOrderByCode(level, selectedCode);
+  if (existing?.deliveredAt) {
+    blockers.push(`${selectedCode} has already been delivered. Undo that delivery before revising the same package.`);
+  } else if (existing) {
+    info.push(`${selectedCode} already exists in Spruce. Confirming will revise that same delivery instead of creating a duplicate.`);
+  }
+
+  return { blockers, warnings, info };
+}
+
+function buildSpruceImportRows(parsed, requestedByKey = new Map()) {
+  if (!activeDelivery) return [];
+  const grouped = new Map();
+  for (const source of parsed.items || []) {
+    const key = normalizeMaterialKey(source.material);
+    if (!key) continue;
+    let item = grouped.get(key);
+    if (!item) {
+      item = {
+        key,
+        sourceMaterial: source.material,
+        importedLf: 0,
+        rawDescriptions: [],
+        breakdown: []
+      };
+      grouped.set(key, item);
+    }
+    item.importedLf += Number(source.quantityLf || 0);
+    for (const raw of source.rawDescriptions || [source.material]) {
+      if (raw && !item.rawDescriptions.includes(raw)) item.rawDescriptions.push(raw);
+    }
+    item.breakdown.push(...(source.breakdown || []));
+  }
+
+  return [...grouped.values()].map(item => {
+    const material = activeDelivery.level.materials.find(candidate => normalizeMaterialKey(candidate.material) === item.key) || null;
+    const requested = requestedByKey.has(item.key) ? Number(requestedByKey.get(item.key) || 0) : item.importedLf;
+    return {
+      ...item,
+      materialId: material?.id || "",
+      materialName: material?.material || "",
+      requestedLf: Math.max(0, requested)
+    };
+  }).sort((a, b) => (a.materialName || a.sourceMaterial).localeCompare(b.materialName || b.sourceMaterial, undefined, { numeric: true }));
+}
+
+function spruceImportExistingOrder() {
+  if (!spruceImportDraft || !activeDelivery) return null;
+  return findSpruceOrderByCode(activeDelivery.level, spruceImportDraft.deliveryCode);
+}
+
+function spruceImportAvailableForRow(row) {
+  if (!activeDelivery || !row.materialId) return 0;
+  const material = activeDelivery.level.materials.find(item => item.id === row.materialId);
+  if (!material) return 0;
+  const existing = spruceImportExistingOrder();
+  const existingLf = existing && !existing.deliveredAt
+    ? (existing.items || []).filter(item => item.materialId === row.materialId || normalizeMaterialKey(item.material) === row.key)
+      .reduce((sum, item) => sum + Number(item.lf || 0), 0)
+    : 0;
+  return forecastRemainingFor(activeDelivery.level, material) + existingLf;
+}
+
+function updateSpruceImportValidationUi() {
+  if (!spruceImportDraft || !activeDelivery) return false;
+  const issues = spruceImportMetaIssues();
+  const blockers = [...issues.blockers];
+  const warnings = [...issues.warnings];
+  const info = [...issues.info];
+  let positiveRows = 0;
+
+  for (const row of spruceImportDraft.rows || []) {
+    const statusEl = document.querySelector(`.spruce-import-row-status[data-import-key="${CSS.escape(row.key)}"]`);
+    const input = document.querySelector(`.spruce-import-qty[data-import-key="${CSS.escape(row.key)}"]`);
+    if (input) row.requestedLf = Math.max(0, Number(input.value || 0));
+    if (row.requestedLf > EPSILON) positiveRows += 1;
+
+    if (!row.materialId) {
+      blockers.push(`No project material matches ${row.sourceMaterial}.`);
+      if (statusEl) {
+        statusEl.textContent = "No project match";
+        statusEl.className = "spruce-import-row-status import-error";
+      }
+      continue;
+    }
+
+    const available = spruceImportAvailableForRow(row);
+    if (row.requestedLf > available + EPSILON) {
+      blockers.push(`${row.materialName} requests ${formatNumber(row.requestedLf)} LF but only ${formatNumber(available)} LF is available for this delivery.`);
+      if (statusEl) {
+        statusEl.textContent = `Exceeds by ${formatNumber(row.requestedLf - available)} LF`;
+        statusEl.className = "spruce-import-row-status import-error";
+      }
+    } else if (statusEl) {
+      statusEl.textContent = row.requestedLf <= EPSILON ? "Skipped" : "Matched";
+      statusEl.className = `spruce-import-row-status ${row.requestedLf <= EPSILON ? "import-muted" : "import-ok"}`;
+    }
+  }
+
+  if (!positiveRows) blockers.push("At least one matched EWP quantity must be greater than zero.");
+  if (!normalizeDeliveryCode(spruceImportDraft.deliveryCode)) blockers.push("Delivery Name is required.");
+
+  const warningsEl = $("spruceImportWarnings");
+  const messages = [
+    ...blockers.map(message => `<div class="import-message import-error">${escapeHtml(message)}</div>`),
+    ...warnings.map(message => `<div class="import-message import-warning">${escapeHtml(message)}</div>`),
+    ...info.map(message => `<div class="import-message import-info">${escapeHtml(message)}</div>`)
+  ];
+  warningsEl.innerHTML = messages.join("");
+  warningsEl.classList.toggle("hidden", !messages.length);
+  $("confirmSpruceImport").disabled = blockers.length > 0;
+  return blockers.length === 0;
+}
+
+function renderSpruceImportReview() {
+  if (!spruceImportDraft || !activeDelivery) return;
+  const parsed = spruceImportDraft.parsed;
+  $("spruceImportDeliveryCode").value = spruceImportDraft.deliveryCode || "";
+  $("spruceImportNote").value = spruceImportDraft.note || "";
+  const sourceParts = [
+    parsed.projectNumber ? `${parsed.projectNumber}${parsed.revision ? ` ${parsed.revision}` : ""}` : "",
+    parsed.levelName || "",
+    parsed.sourceFileName || ""
+  ].filter(Boolean);
+  $("spruceImportReviewSummary").textContent = `${sourceParts.join(" · ")} · ${formatNumber(parsed.totalLf || 0)} LF of EWP read from ${parsed.sourceRows || 0} material lines.`;
+
+  const existing = spruceImportExistingOrder();
+  $("spruceImportItems").innerHTML = `<div class="table-wrap"><table class="delivery-table spruce-import-table">
+    <thead><tr><th>PDF Material</th><th>Project Material</th><th>Imported LF</th><th>Available LF</th><th>Put in Spruce</th><th>Status</th></tr></thead>
+    <tbody>${(spruceImportDraft.rows || []).map(row => {
+      const available = spruceImportAvailableForRow(row);
+      const existingLf = existing && row.materialId ? (existing.items || []).filter(item => item.materialId === row.materialId || normalizeMaterialKey(item.material) === row.key).reduce((sum, item) => sum + Number(item.lf || 0), 0) : 0;
+      const sourceDetail = row.rawDescriptions?.length > 1 ? `<div class="small-note">${row.rawDescriptions.map(escapeHtml).join(" · ")}</div>` : "";
+      return `<tr>
+        <td>${escapeHtml(row.sourceMaterial)}${sourceDetail}</td>
+        <td>${row.materialName ? escapeHtml(row.materialName) : '<span class="import-error">No match</span>'}</td>
+        <td>${formatNumber(row.importedLf)}</td>
+        <td>${row.materialId ? `${formatNumber(available)}${existingLf > EPSILON ? `<div class="small-note">includes ${formatNumber(existingLf)} LF already in ${escapeHtml(spruceImportDraft.deliveryCode)}</div>` : ""}` : "—"}</td>
+        <td><input class="spruce-import-qty" data-import-key="${escapeHtml(row.key)}" type="number" min="0" step="0.01" value="${escapeHtml(String(row.requestedLf))}" ${row.materialId ? "" : "disabled"} /></td>
+        <td><span class="spruce-import-row-status" data-import-key="${escapeHtml(row.key)}"></span></td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+  updateSpruceImportValidationUi();
+}
+
+async function handleSpruceDeliveryPdf(file) {
+  if (!activeDelivery || !file) return;
+  const status = $("spruceImportStatus");
+  status.textContent = `Reading ${file.name}…`;
+  status.className = "small-note";
+  try {
+    const lib = await loadPdfJs();
+    const lines = await extractPdfLines(file, lib);
+    const parsed = parseDeliveryMaterialReportLines(lines, file.name);
+    const deliveryCode = normalizeDeliveryCode(parsed.deliveryCode) || suggestSpruceDeliveryCode(activeDelivery.level);
+    spruceImportDraft = {
+      parsed,
+      deliveryCode,
+      note: normalizeSpaces($("spruceOrderNote").value),
+      rows: []
+    };
+    spruceImportDraft.rows = buildSpruceImportRows(parsed);
+    $("spruceDeliveryCode").value = deliveryCode;
+    renderSpruceImportReview();
+    $("spruceImportReviewDialog").showModal();
+    status.textContent = `Read ${formatNumber(parsed.totalLf)} LF · ${deliveryCode}`;
+    status.className = "small-note import-ok";
+  } catch (error) {
+    console.error(error);
+    spruceImportDraft = null;
+    status.textContent = error.message || "Could not read this delivery PDF.";
+    status.className = "small-note import-error";
+  }
+}
+
+async function confirmSpruceImport() {
+  if (!spruceImportDraft || !activeDelivery) return;
+  spruceImportDraft.deliveryCode = normalizeDeliveryCode($("spruceImportDeliveryCode").value);
+  spruceImportDraft.note = normalizeSpaces($("spruceImportNote").value);
+  const requestedByKey = new Map((spruceImportDraft.rows || []).map(row => [row.key, Number(row.requestedLf || 0)]));
+
+  await refreshActiveDelivery();
+  if (!activeDelivery) throw new Error("This level no longer exists in the shared data.");
+  spruceImportDraft.rows = buildSpruceImportRows(spruceImportDraft.parsed, requestedByKey);
+  renderSpruceImportReview();
+  if (!updateSpruceImportValidationUi()) throw new Error("Review the highlighted PDF import issues before confirming.");
+
+  const code = normalizeDeliveryCode(spruceImportDraft.deliveryCode);
+  const existing = findSpruceOrderByCode(activeDelivery.level, code);
+  const items = (spruceImportDraft.rows || [])
+    .filter(row => row.materialId && Number(row.requestedLf || 0) > EPSILON)
+    .map(row => ({
+      material_id: row.materialId,
+      material_name: row.materialName,
+      quantity_lf: Number(row.requestedLf || 0)
+    }));
+
+  await rpc("upsert_spruce_order_import", {
+    p_level_id: activeDelivery.level.id,
+    p_delivery_code: code,
+    p_note: spruceImportDraft.note || null,
+    p_source_file_name: spruceImportDraft.parsed.sourceFileName || null,
+    p_source_project_number: spruceImportDraft.parsed.projectNumber || null,
+    p_source_revision: spruceImportDraft.parsed.revision || null,
+    p_source_level_name: spruceImportDraft.parsed.levelName || null,
+    p_items: items
+  });
+
+  await recordActivity("level", activeDelivery.level.id, existing ? "revise_spruce_delivery_pdf" : "import_spruce_delivery_pdf", {
+    delivery_code: code,
+    source_file_name: spruceImportDraft.parsed.sourceFileName || "",
+    source_project_number: spruceImportDraft.parsed.projectNumber || "",
+    source_revision: spruceImportDraft.parsed.revision || "",
+    source_level_name: spruceImportDraft.parsed.levelName || "",
+    note: spruceImportDraft.note || "",
+    total_lf: items.reduce((sum, item) => sum + Number(item.quantity_lf || 0), 0),
+    items: items.map(item => ({ material: item.material_name, lf: item.quantity_lf }))
+  });
+
+  const savedCode = code;
+  spruceImportDraft = null;
+  $("spruceImportReviewDialog").close("saved");
+  $("sprucePdfFile").value = "";
+  await refreshActiveDelivery();
+  if (activeDelivery) {
+    $("spruceImportStatus").textContent = `${savedCode} saved in Spruce.`;
+    $("spruceImportStatus").className = "small-note import-ok";
+    $("spruceOrderNote").value = "";
+    $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(activeDelivery.level);
+    refreshDeliveryDialogViews();
+    setDeliveryActionMode(entireOutstandingInSpruce(activeDelivery.level) ? "deliver" : "spruce");
+  }
+}
+
+async function removeAllOpenSpruceOrders() {
+  if (!activeDelivery) return;
+  await refreshActiveDelivery();
+  if (!activeDelivery) return alert("This level no longer exists in the shared data.");
+  const orders = openSpruceOrders(activeDelivery.level);
+  if (!orders.length) return alert("There is no open Spruce material to remove.");
+  const total = orders.reduce((sum, order) => sum + spruceOrderTotal(order), 0);
+  const names = orders.map(order => order.deliveryCode || "Spruce Order").join(", ");
+  if (!confirm(`Remove all open Spruce material for this level?\n\n${names}\n${formatNumber(total)} LF will return to Forecast Remaining.`)) return;
+  await deleteRows("spruce_orders", { id: `in.(${orders.map(order => order.id).join(",")})` });
+  await recordActivity("level", activeDelivery.level.id, "remove_level_from_spruce", {
+    delivery_codes: orders.map(order => order.deliveryCode || ""),
+    total_lf: total,
+    items: orders.flatMap(order => (order.items || []).map(item => ({ delivery_code: order.deliveryCode || "", material: item.material, lf: item.lf })))
+  });
+  await refreshActiveDelivery();
+  if (activeDelivery) {
+    $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(activeDelivery.level);
+    refreshDeliveryDialogViews();
+    setDeliveryActionMode("spruce");
+  }
 }
 
 async function saveSpruceOrder() {
   if (!activeDelivery) return;
+  const deliveryCode = normalizeDeliveryCode($("spruceDeliveryCode").value) || suggestSpruceDeliveryCode(activeDelivery.level);
+  $("spruceDeliveryCode").value = deliveryCode;
+  const duplicate = findSpruceOrderByCode(activeDelivery.level, deliveryCode);
+  if (duplicate) return alert(`${deliveryCode} already exists for this level. Remove/revise that delivery instead of creating a duplicate.`);
   const requestedByMaterial = new Map();
   document.querySelectorAll(".delivery-input").forEach(input => {
     const requested = Number(input.value || 0);
@@ -2987,6 +3390,9 @@ async function saveSpruceOrder() {
 
   await refreshActiveDelivery();
   if (!activeDelivery) return alert("This level no longer exists in the shared data.");
+  if (findSpruceOrderByCode(activeDelivery.level, deliveryCode)) {
+    return alert(`${deliveryCode} already exists for this level. Remove/revise that delivery instead of creating a duplicate.`);
+  }
 
   const items = [];
   for (const [materialId, requested] of requestedByMaterial.entries()) {
@@ -3007,6 +3413,11 @@ async function saveSpruceOrder() {
     await insertRows("spruce_orders", {
       id: orderId,
       level_id: activeDelivery.level.id,
+      delivery_code: deliveryCode,
+      source_file_name: null,
+      source_project_number: null,
+      source_revision: null,
+      source_level_name: null,
       entered_at: new Date().toISOString(),
       note: note || null,
       version: 1
@@ -3027,6 +3438,7 @@ async function saveSpruceOrder() {
   }
 
   await recordActivity("level", activeDelivery.level.id, "put_in_spruce", {
+    delivery_code: deliveryCode,
     note,
     items: items.map(item => ({ material: item.material.material, lf: item.lf })),
     total_lf: items.reduce((sum, item) => sum + item.lf, 0)
@@ -3034,7 +3446,9 @@ async function saveSpruceOrder() {
   await refreshActiveDelivery();
   if (activeDelivery) {
     $("spruceOrderNote").value = "";
+    $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(activeDelivery.level);
     refreshDeliveryDialogViews();
+    setDeliveryActionMode(entireOutstandingInSpruce(activeDelivery.level) ? "deliver" : "spruce");
   }
 }
 
@@ -3057,6 +3471,7 @@ async function deliverSpruceOrder(orderId) {
   if (!changed?.length) throw new Error("This Spruce order changed before it could be delivered. Review the refreshed order and try again.");
 
   await recordActivity("level", activeDelivery.level.id, "deliver_spruce_order", {
+    delivery_code: order.deliveryCode || "",
     delivery_date: date,
     note,
     total_lf: spruceOrderTotal(order),
@@ -3080,13 +3495,15 @@ async function removeSpruceOrder(orderId) {
   const deleted = await deleteRows("spruce_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` });
   if (!deleted?.length) throw new Error("This Spruce order changed before it could be removed.");
   await recordActivity("level", activeDelivery.level.id, "remove_from_spruce", {
+    delivery_code: order.deliveryCode || "",
     total_lf: spruceOrderTotal(order),
     items: (order.items || []).map(item => ({ material: item.material, lf: item.lf }))
   });
   await refreshActiveDelivery();
   if (activeDelivery) {
+    $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(activeDelivery.level);
     refreshDeliveryDialogViews();
-    setDeliveryActionMode("deliver");
+    setDeliveryActionMode(openSpruceOrders(activeDelivery.level).length ? "deliver" : "spruce");
   }
 }
 
@@ -3106,6 +3523,7 @@ async function undoSpruceDelivery(orderId) {
   });
   if (!changed?.length) throw new Error("This Spruce order changed before the delivery could be undone.");
   await recordActivity("level", activeDelivery.level.id, "undo_spruce_delivery", {
+    delivery_code: order.deliveryCode || "",
     delivery_date: oldDate,
     total_lf: spruceOrderTotal(order)
   });
@@ -3402,6 +3820,11 @@ function cleanBackupState() {
           items: (delivery.items || []).map(item => ({ material: item.material, lf: item.lf }))
         })),
         spruceOrders: (level.spruceOrders || []).map(order => ({
+          deliveryCode: order.deliveryCode || "",
+          sourceFileName: order.sourceFileName || "",
+          sourceProjectNumber: order.sourceProjectNumber || "",
+          sourceRevision: order.sourceRevision || "",
+          sourceLevelName: order.sourceLevelName || "",
           enteredAt: order.enteredAt || "",
           note: order.note || "",
           deliveredAt: order.deliveredAt || "",
@@ -3461,6 +3884,11 @@ function normalizeBackup(parsed) {
         })),
         spruceOrders: Array.isArray(level.spruceOrders) ? level.spruceOrders.map(order => ({
           id: uid(),
+          deliveryCode: normalizeDeliveryCode(order.deliveryCode || ""),
+          sourceFileName: normalizeSpaces(order.sourceFileName || ""),
+          sourceProjectNumber: normalizeSpaces(order.sourceProjectNumber || "").toUpperCase(),
+          sourceRevision: normalizeSpaces(order.sourceRevision || "").toUpperCase(),
+          sourceLevelName: normalizeSpaces(order.sourceLevelName || ""),
           enteredAt: order.enteredAt || "",
           note: normalizeSpaces(order.note || ""),
           deliveredAt: order.deliveredAt || "",
@@ -3920,8 +4348,80 @@ function wireEvents() {
   });
 
   $("updateForecastDate").addEventListener("click", updateForecastDate);
-  $("spruceModeEntry").addEventListener("click", () => setDeliveryActionMode("spruce"));
+  $("spruceModeEntry").addEventListener("click", async () => {
+    if ($("spruceModeEntry").dataset.action === "remove") {
+      try { await removeAllOpenSpruceOrders(); }
+      catch (error) {
+        console.error(error);
+        alert(error.message);
+        await syncFromCloud({ silent: true, rebindActive: true });
+        if (activeDelivery) refreshDeliveryDialogViews();
+      }
+      return;
+    }
+    setDeliveryActionMode("spruce");
+  });
   $("spruceModeDelivery").addEventListener("click", () => setDeliveryActionMode("deliver"));
+  $("spruceDeliveryCode").addEventListener("input", event => {
+    const caret = event.target.selectionStart;
+    event.target.value = String(event.target.value || "").toUpperCase().replace(/\s+/g, "");
+    try { event.target.setSelectionRange(caret, caret); } catch {}
+  });
+  $("chooseSprucePdf").addEventListener("click", () => $("sprucePdfFile").click());
+  $("chooseSprucePdfFromOrders").addEventListener("click", () => $("sprucePdfFile").click());
+  $("sprucePdfFile").addEventListener("change", event => {
+    const file = event.target.files?.[0];
+    if (file) handleSpruceDeliveryPdf(file);
+  });
+  $("spruceImportDeliveryCode").addEventListener("input", event => {
+    if (!spruceImportDraft) return;
+    spruceImportDraft.deliveryCode = normalizeDeliveryCode(event.target.value);
+    renderSpruceImportReview();
+    requestAnimationFrame(() => {
+      const input = $("spruceImportDeliveryCode");
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  });
+  $("spruceImportNote").addEventListener("input", event => { if (spruceImportDraft) spruceImportDraft.note = event.target.value; });
+  $("spruceImportItems").addEventListener("input", event => {
+    const input = event.target.closest(".spruce-import-qty");
+    if (!input || !spruceImportDraft) return;
+    const row = spruceImportDraft.rows.find(item => item.key === input.dataset.importKey);
+    if (row) row.requestedLf = Math.max(0, Number(input.value || 0));
+    updateSpruceImportValidationUi();
+  });
+  $("confirmSpruceImport").addEventListener("click", async () => {
+    const button = $("confirmSpruceImport");
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = "Saving…";
+    try { await confirmSpruceImport(); }
+    catch (error) {
+      console.error(error);
+      alert(error.message);
+      if (spruceImportDraft && activeDelivery) {
+        await syncFromCloud({ silent: true, rebindActive: true });
+        if (activeDelivery) {
+          const requested = new Map((spruceImportDraft.rows || []).map(row => [row.key, row.requestedLf]));
+          spruceImportDraft.rows = buildSpruceImportRows(spruceImportDraft.parsed, requested);
+          renderSpruceImportReview();
+        }
+      }
+    } finally {
+      if ($("spruceImportReviewDialog").open) {
+        button.textContent = original;
+        updateSpruceImportValidationUi();
+      }
+    }
+  });
+  $("spruceImportReviewDialog").addEventListener("close", () => {
+    if ($("spruceImportReviewDialog").returnValue !== "saved") {
+      spruceImportDraft = null;
+      $("sprucePdfFile").value = "";
+      $("spruceImportStatus").textContent = "";
+    }
+  });
   $("deliveryMaterialSearch").addEventListener("input", applyDeliveryMaterialFilter);
   $("clearDeliveryMaterialSearch").addEventListener("click", () => {
     $("deliveryMaterialSearch").value = "";

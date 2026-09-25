@@ -1263,3 +1263,77 @@ select { font: inherit; }
   .spruce-order-card-actions { justify-content: stretch; }
   .spruce-order-card-actions .button { width: 100%; }
 }
+
+/* V0.20 delivery naming + Layout Material List PDF import */
+.spruce-entry-meta { grid-template-columns: minmax(150px, .55fr) minmax(260px, 1.45fr); }
+.spruce-mode-button.spruce-remove-mode {
+  color: var(--danger);
+}
+.spruce-mode-button.spruce-remove-mode:hover {
+  background: #fff0ee;
+}
+.spruce-import-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 14px;
+  margin: 0 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-alt);
+}
+.spruce-import-card strong { display: block; margin-bottom: 2px; }
+.spruce-import-card .small-note { margin: 0; }
+.spruce-import-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.spruce-import-review-dialog { width: min(1180px, calc(100vw - 34px)); }
+.spruce-import-meta { grid-template-columns: minmax(150px, .55fr) minmax(260px, 1.45fr); }
+.spruce-import-warnings {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px;
+}
+.import-message {
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.import-message.import-error { background: #fff0ee; border-color: #f2b8b5; }
+.import-message.import-warning { background: var(--warning-soft); border-color: #f0cf87; }
+.import-message.import-info { background: var(--accent-soft); border-color: #bfd2ff; color: var(--accent-dark); }
+.import-error { color: var(--danger); font-weight: 750; }
+.import-warning { color: var(--warning); }
+.import-info { color: var(--accent); }
+.import-ok { color: var(--success); font-weight: 750; }
+.import-muted { color: var(--muted); }
+.spruce-import-table { min-width: 1020px; }
+.spruce-import-table th,
+.spruce-import-table td { text-align: left; vertical-align: middle; white-space: normal; }
+.spruce-import-table th:nth-child(3),
+.spruce-import-table td:nth-child(3),
+.spruce-import-table th:nth-child(4),
+.spruce-import-table td:nth-child(4) { text-align: right; width: 130px; }
+.spruce-import-table input { width: 115px; min-width: 105px; text-align: right; }
+.spruce-import-row-status { white-space: nowrap; font-size: 11px; font-weight: 800; }
+
+@media (max-width: 720px) {
+  .spruce-entry-meta,
+  .spruce-import-meta { grid-template-columns: 1fr; }
+  .spruce-import-card { align-items: stretch; flex-direction: column; }
+  .spruce-import-actions { justify-content: flex-start; }
+  .spruce-import-actions .button { width: 100%; }
+}
+.spruce-delivery-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -2px 0 12px;
+}
+.spruce-delivery-panel-head .spruce-delivery-help { margin: 0; }
+@media (max-width: 720px) {
+  .spruce-delivery-panel-head { align-items: stretch; flex-direction: column; }
+  .spruce-delivery-panel-head .button { width: 100%; }
+}
