@@ -124,6 +124,8 @@ async function ensureAuthenticated() {
   const restored = await restoreSession();
   if (restored?.user) {
     applySessionIdentity(restored);
+    setLoginError("");
+    setAuthGateVisible(false);
     return restored;
   }
   return openLoginDialog();
@@ -729,7 +731,7 @@ function projectStats(project) {
   const resolved = Math.min(required, delivered + excluded);
   const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
   const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
-  return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status, packagesRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
+  return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status, levelsRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
 }
 
 function allLevels() {
@@ -774,6 +776,28 @@ function planningStatusLabel(status) {
   if (status === "spruce") return "IN SPRUCE";
   if (status === "mixed") return "PARTLY IN SPRUCE";
   if (status === "delivered") return "DELIVERED";
+  return "FORECAST";
+}
+
+function levelWorkflowStatus(level) {
+  const stats = levelStats(level);
+  if (stats.outstanding <= EPSILON) return "completed";
+  if (stats.inSpruce > EPSILON || stats.delivered > EPSILON || stats.excluded > EPSILON) return "ongoing";
+  return "forecast";
+}
+
+function projectWorkflowStatus(project) {
+  const levels = project.levels || [];
+  if (!levels.length) return "forecast";
+  const statuses = levels.map(levelWorkflowStatus);
+  if (statuses.every(status => status === "completed")) return "completed";
+  if (statuses.some(status => status !== "forecast")) return "ongoing";
+  return "forecast";
+}
+
+function workflowStatusLabel(status) {
+  if (status === "ongoing") return "ONGOING";
+  if (status === "completed") return "COMPLETED";
   return "FORECAST";
 }
 
@@ -1509,17 +1533,38 @@ async function persistDraftProject() {
     saveButton.textContent = "Confirm & Add Project";
   }
 }
+function matrixSearchField() {
+  return $("projectSearchField")?.value || "all";
+}
+
 function projectMatchesMatrixSearch(project) {
   const query = normalizeSpaces($("projectSearch")?.value || "").toLowerCase();
   if (!query) return true;
-  const haystack = [
-    project.projectNumber,
-    project.revision,
-    project.address,
-    project.customer,
-    project.sales
-  ].map(value => normalizeSpaces(value || "")).join(" ").toLowerCase();
-  return haystack.includes(query);
+  const field = matrixSearchField();
+  const valueFor = key => normalizeSpaces(project?.[key] || "").toLowerCase();
+
+  // Sales initials/codes are intentionally exact when the Sales filter is selected.
+  // This avoids a search such as JH matching unrelated partial text elsewhere.
+  if (field === "sales") return valueFor("sales") === query;
+  if (["customer", "projectNumber", "address", "revision"].includes(field)) return valueFor(field).includes(query);
+
+  return ["projectNumber", "revision", "address", "customer", "sales"]
+    .map(valueFor)
+    .some(value => value.includes(query));
+}
+
+function updateProjectSearchPlaceholder() {
+  const input = $("projectSearch");
+  if (!input) return;
+  const placeholders = {
+    all: "Search all project fields…",
+    sales: "Sales initials — exact match…",
+    customer: "Search customer…",
+    projectNumber: "Search project #…",
+    address: "Search project name…",
+    revision: "Search revision…"
+  };
+  input.placeholder = placeholders[matrixSearchField()] || placeholders.all;
 }
 
 function visibleProjects(showDelivered, { ignoreSearch = false } = {}) {
@@ -1563,7 +1608,7 @@ function columnMaterialStats(column, materialKey) {
 
 function levelHeaderHtml(project, level) {
   const stats = levelStats(level);
-  const plan = planningStatus(level);
+  const workflow = levelWorkflowStatus(level);
   const multiLevel = (project.levels || []).length > 1;
   return `<th class="project-col level-project-col">
     <div class="project-header-card">
@@ -1571,7 +1616,7 @@ function levelHeaderHtml(project, level) {
       <div class="operational-line"><strong>${escapeHtml(level.name)}</strong> · ${escapeHtml(level.estimatedDeliveryDate ? formatDate(level.estimatedDeliveryDate) : "No date")}</div>
       ${progressHtml(stats.percent, "level complete")}
       <div class="project-card-actions">
-        <span class="status-badge workflow-${plan}">${planningStatusLabel(plan)}</span>
+        <span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span>
         <button class="mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage</button>
         <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
         ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse</button>` : ""}
@@ -1583,15 +1628,16 @@ function levelHeaderHtml(project, level) {
 function collapsedProjectHeaderHtml(project) {
   const stats = projectStats(project);
   const next = stats.nextLevel;
-  const packageWord = stats.packagesRemaining === 1 ? "package" : "packages";
+  const workflow = projectWorkflowStatus(project);
+  const levelWord = stats.levelsRemaining === 1 ? "level" : "levels";
   return `<th class="project-col collapsed-project-col">
     <div class="project-header-card collapsed-summary-card">
       ${projectMetaHtml(project)}
       ${next ? `<div class="operational-line"><strong>Next:</strong> ${escapeHtml(next.name)} · ${escapeHtml(formatDate(next.estimatedDeliveryDate))}</div>` : `<div class="operational-line"><strong>Project complete</strong></div>`}
-      <div class="package-line">${stats.packagesRemaining} ${packageWord} remaining</div>
+      <div class="package-line">${stats.levelsRemaining} ${levelWord} remaining</div>
       ${progressHtml(stats.percent, "overall complete")}
       <div class="project-card-actions">
-        <span class="status-badge workflow-${next ? planningStatus(next) : "delivered"}">${planningStatusLabel(next ? planningStatus(next) : "delivered")}</span>
+        <span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span>
         <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
         <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand</button>
       </div>
@@ -1849,7 +1895,7 @@ function renderWeeklySchedule() {
   const firstWeek = sixWeekStarts()[0];
   const rows = refs.map(({ project, level }) => {
     const stats = levelStats(level);
-    const plan = planningStatus(level);
+    const workflow = levelWorkflowStatus(level);
     const weekIndex = weekIndexForDate(level.estimatedDeliveryDate, firstWeek);
     const overdue = weekIndex < 0;
     const weekStart = addDaysIso(firstWeek, Math.max(0, weekIndex) * 7);
@@ -1859,7 +1905,7 @@ function renderWeeklySchedule() {
       <td>${escapeHtml(formatDate(level.estimatedDeliveryDate))}</td>
       <td class="weekly-project-cell"><strong>${escapeHtml(project.projectNumber || "—")}</strong><span>${escapeHtml(project.address || "")}</span></td>
       <td>${escapeHtml(level.name)}</td>
-      <td><span class="status-badge workflow-${plan}">${planningStatusLabel(plan)}</span></td>
+      <td><span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span></td>
       <td>${formatNumber(stats.outstanding)}</td>
     </tr>`;
   }).join("");
@@ -2776,6 +2822,24 @@ function scheduleHistoryRefresh() {
     historyRefreshTimer = null;
     loadAndRenderHistory({ silent: true });
   }, 450);
+}
+
+function openSprucePdfPicker() {
+  const input = $("sprucePdfFile");
+  if (!input) return;
+  // Reset before opening so selecting the same PDF again always fires a change event.
+  input.value = "";
+  try {
+    if (typeof input.showPicker === "function") input.showPicker();
+    else input.click();
+  } catch (error) {
+    // showPicker can be unsupported/restricted in some browsers; a direct click is the fallback.
+    try { input.click(); }
+    catch (fallbackError) {
+      console.error(error, fallbackError);
+      alert("The PDF file picker could not open. Please try again.");
+    }
+  }
 }
 
 async function startLiveSync() {
@@ -4300,6 +4364,12 @@ function wireEvents() {
   $("confirmProjectSave").addEventListener("click", persistDraftProject);
   $("showDelivered").addEventListener("change", renderMatrix);
   $("projectSearch").addEventListener("input", renderMatrix);
+  $("projectSearchField").addEventListener("change", () => {
+    updateProjectSearchPlaceholder();
+    renderMatrix();
+    $("projectSearch").focus();
+  });
+  updateProjectSearchPlaceholder();
   $("clearProjectSearch").addEventListener("click", () => {
     $("projectSearch").value = "";
     renderMatrix();
@@ -4367,11 +4437,18 @@ function wireEvents() {
     event.target.value = String(event.target.value || "").toUpperCase().replace(/\s+/g, "");
     try { event.target.setSelectionRange(caret, caret); } catch {}
   });
-  $("chooseSprucePdf").addEventListener("click", () => $("sprucePdfFile").click());
-  $("chooseSprucePdfFromOrders").addEventListener("click", () => $("sprucePdfFile").click());
-  $("sprucePdfFile").addEventListener("change", event => {
-    const file = event.target.files?.[0];
-    if (file) handleSpruceDeliveryPdf(file);
+  $("chooseSprucePdf").addEventListener("click", openSprucePdfPicker);
+  $("chooseSprucePdfFromOrders").addEventListener("click", openSprucePdfPicker);
+  $("sprucePdfFile").addEventListener("change", async event => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      await handleSpruceDeliveryPdf(file);
+    } finally {
+      // Keep the picker reusable even if parsing fails or the user selects the same file again.
+      input.value = "";
+    }
   });
   $("spruceImportDeliveryCode").addEventListener("input", event => {
     if (!spruceImportDraft) return;

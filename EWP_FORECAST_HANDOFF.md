@@ -1,6 +1,6 @@
 # EWP Material Forecast — Development Handoff
 
-**Canonical baseline:** V0.20  
+**Canonical baseline:** V0.22  
 **Project owner / developer credit:** Samuel Chung @ Griff
 
 This file is the canonical workflow and development handoff for future ChatGPT/code migrations. When continuing development in a new chat, upload the latest ZIP and tell ChatGPT to read this file before changing code.
@@ -49,6 +49,22 @@ Definitions:
 - **In Spruce:** quantity committed/reserved in Spruce but not physically delivered.
 - **Delivered:** quantity physically shipped; a Spruce delivery always moves an entire Spruce batch to Delivered.
 - **Excluded:** customer-supplied/pre-ordered/no-longer-required material removed from forecast without changing the original project quantity.
+
+### User-facing workflow status (V0.21)
+
+Project/level summary pills use only **FORECAST / ONGOING / COMPLETED**. These are summary states and do not replace the detailed quantity split above.
+
+Level status:
+- **FORECAST:** no quantity has progressed into Spruce/delivery/exclusion and outstanding LF remains.
+- **ONGOING:** outstanding LF remains and at least some quantity is In Spruce, Delivered, or Excluded.
+- **COMPLETED:** no outstanding LF remains.
+
+Project status:
+- **FORECAST:** every level is still Forecast.
+- **ONGOING:** at least one level has progressed beyond Forecast, but the project is not fully complete. This includes a project with completed earlier levels and forecast later levels.
+- **COMPLETED:** every level has no outstanding LF.
+
+Collapsed project cards count **levels remaining**, not delivery packages remaining. One level may contain multiple deliveries such as L3D1/L3D2/L3D3.
 
 ## 5. Spruce batches / delivery packages
 
@@ -100,6 +116,7 @@ Rules:
 - Preserve PDF filename, project number, revision, and level name on the Spruce order for reference.
 - Filename/report Delivery Name such as `L3D1` should be recognized when present.
 - Re-importing the same open Delivery Name updates/revises that package atomically.
+- The delivery-PDF picker must reset before each open so selecting the same PDF again still triggers parsing. Prefer native `showPicker()` with a direct file-input click fallback.
 
 Validated sample for V0.20:
 - `TC25161_R1 - Sherman Rd - Apartment - L3D1 Test.pdf`
@@ -147,15 +164,33 @@ Inventory tracks:
 
 Stock Owed uses the material-specific lead-time window and must not double-count quantities already in Spruce.
 
-## 9. Database / deployment
+## 9. Project search/filter (V0.21)
+
+Projects & Materials has a field selector plus one search input:
+- **All fields**: partial match across project #, revision, project name/address, customer and sales.
+- **Sales**: exact normalized match. Example: Sales filter `JH` matches Sales = JH and does not match unrelated partial text elsewhere.
+- **Customer / Project # / Project Name / Revision**: partial match within the selected field only.
+
+
+### Authentication persistence (V0.22)
+
+- Supabase access/refresh tokens continue to be stored in browser `localStorage`.
+- A valid saved session must survive a normal page refresh and browser reopen.
+- Startup must hide the full-screen login gate immediately after `restoreSession()` returns a valid authenticated user.
+- Do not require a fresh password login merely because the page was refreshed.
+- Explicit Sign out, revoked/invalid sessions, or browser storage being cleared should still return the user to the login gate.
+
+## 10. Database / deployment
 
 Current schema version: **20**.
 
-For V0.20, run:
+V0.22 introduces **no database migration**. If the database is already on V0.20 schema, deploy the V0.22 frontend only.
+
+For a database older than V0.20, run:
 
 `supabase_v0_20.sql`
 
-in the Supabase SQL Editor **before** deploying the V0.20 frontend.
+in the Supabase SQL Editor before deploying V0.22.
 
 The migration is cumulative/idempotent and includes prior inventory/purchasing/Spruce schema. V0.20 adds:
 - `delivery_code` and source-PDF metadata on `spruce_orders`
@@ -164,7 +199,7 @@ The migration is cumulative/idempotent and includes prior inventory/purchasing/S
 
 GitHub Pages does not run SQL files automatically. SQL files may remain in the repository as migration/reference files.
 
-## 10. Coding / UX principles
+## 11. Coding / UX principles
 
 - Preserve existing working behavior unless the requested change requires altering it.
 - Do not silently discard or truncate material quantities. Flag mismatches/excesses for user review.

@@ -270,6 +270,15 @@ thead .material-col { z-index: 6; background: #f8fafc; }
 .history-delete { border: 0; background: transparent; color: var(--danger); font-weight: 800; }
 
 .hidden { display: none !important; }
+.native-file-picker-input {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
 
 @media (max-width: 820px) {
   .grid.two-column { grid-template-columns: 1fr; }
@@ -733,6 +742,8 @@ thead .material-col { z-index: 6; background: #f8fafc; }
 @media (max-width: 760px) {
   .project-search-bar { align-items: stretch; flex-wrap: wrap; }
   .project-search-field { flex-basis: 100%; max-width: none; }
+  .project-search-filter { flex: 0 0 132px; }
+  .project-search-box { flex: 1 1 260px; }
   .project-search-count { align-self: center; }
 }
 
@@ -817,6 +828,27 @@ thead .material-col { z-index: 6; background: #f8fafc; }
 }
 
 .project-search-bar { align-items: center; }
+.project-search-filter {
+  flex: 0 0 145px;
+  margin: 0;
+}
+.project-search-filter select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 34px 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+.project-search-filter select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .project-search-box {
   position: relative;
   flex: 1 1 520px;
@@ -1031,6 +1063,17 @@ select { font: inherit; }
   color: #344054;
   border: 1px solid #d0d5dd;
 }
+.status-badge.workflow-ongoing {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid #c7d8ff;
+}
+.status-badge.workflow-completed {
+  background: var(--success-soft);
+  color: var(--success);
+  border: 1px solid #bce8d2;
+}
+/* Legacy workflow classes remain for historical activity UI. */
 .status-badge.workflow-spruce {
   background: var(--accent-soft);
   color: var(--accent);

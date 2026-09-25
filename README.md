@@ -1,6 +1,28 @@
-# EWP Material Forecast — V0.20
+# EWP Material Forecast — V0.22
 
 **Developed by Samuel Chung @ Griff**
+
+
+## V0.22 changes
+
+V0.22 fixes saved Supabase login restoration on page refresh.
+
+- Fixes a startup UI bug where a valid saved Supabase session was restored correctly but the full-screen login gate was never dismissed. This made users appear to be logged out after every browser refresh even though the saved session still existed.
+- On startup, a valid restored session now immediately restores the signed-in identity and hides the login gate.
+- Normal sign-out behavior is unchanged. Expired/revoked sessions still fall back to the login screen.
+- No Supabase schema, RLS, Realtime, or SQL change is required for V0.22. Deploy the frontend files only.
+
+
+## V0.21 changes
+
+V0.21 is a frontend/UX refinement of the V0.20 delivery workflow. It fixes the delivery-PDF picker, makes project/level status reflect the overall workflow rather than a single Spruce state, and adds field-aware project filtering.
+
+- Fixes **Import Delivery PDF** / **Import / Revise Delivery PDF** file selection by resetting the file input before every picker open, using the browser-native `showPicker()` when available, and falling back to a direct file-input click. Selecting the same PDF again after a failed/revised import now triggers a fresh parse.
+- Changes collapsed project wording from **packages remaining** to **levels remaining**. Delivery packages such as L3D1/L3D2 remain independent Spruce batches within a level and do not affect the level count.
+- Replaces matrix/forecast status pills with **FORECAST / ONGOING / COMPLETED**. A level is Ongoing once any quantity is in Spruce, delivered, or excluded; it is Completed when no outstanding LF remains. A project is Ongoing when at least one level has progressed beyond Forecast but the whole project is not yet complete.
+- Collapsed project status is now calculated from **all project levels**, not copied from the next level. This allows one project to correctly show Ongoing while some levels are completed and later levels are still forecast.
+- Adds a project-search field selector: **All fields / Sales / Customer / Project # / Project Name / Revision**. `Sales` uses an exact normalized match (for example, Sales = `JH`) so initials do not accidentally match partial text in a customer or project name. Other field filters retain partial matching.
+- No Supabase schema/RLS/Realtime change is required for V0.21. If upgrading from V0.20, replace the frontend files only. A database older than V0.20 still needs `supabase_v0_20.sql`.
 
 
 ## V0.20 changes

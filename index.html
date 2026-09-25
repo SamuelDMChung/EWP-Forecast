@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.20 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.22 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -113,9 +113,19 @@
         </div>
       </div>
       <div class="project-search-bar">
+        <label class="project-search-filter">
+          <select id="projectSearchField" aria-label="Project search field">
+            <option value="all">All fields</option>
+            <option value="sales">Sales</option>
+            <option value="customer">Customer</option>
+            <option value="projectNumber">Project #</option>
+            <option value="address">Project Name</option>
+            <option value="revision">Revision</option>
+          </select>
+        </label>
         <div class="project-search-box">
           <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
-          <input id="projectSearch" type="search" placeholder="Search by customer, sales, project #, or project name…" autocomplete="off" aria-label="Search projects" />
+          <input id="projectSearch" type="search" placeholder="Search all project fields…" autocomplete="off" aria-label="Search projects" />
           <button id="clearProjectSearch" type="button" class="search-clear hidden" aria-label="Clear project search">×</button>
         </div>
         <span id="projectSearchCount" class="project-search-count"></span>
@@ -360,7 +370,7 @@
         <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
         <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver Spruce Order</button>
       </div>
-      <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" class="hidden" />
+      <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" class="native-file-picker-input" tabindex="-1" aria-hidden="true" />
 
       <section id="spruceEntryPanel" class="spruce-action-panel">
         <div class="form-grid delivery-transaction-meta spruce-entry-meta">
