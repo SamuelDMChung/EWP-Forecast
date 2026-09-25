@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>EWP Material Forecast</title>
-  <link rel="stylesheet" href="styles.css?v=0.26" />
+  <link rel="stylesheet" href="styles.css?v=0.27" />
 </head>
 <body>
   <header class="app-header">
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.26 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.27 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -366,14 +366,17 @@
         <span id="forecastDateStatus" class="small-note inline-save-status" aria-live="polite">Auto-saves</span>
       </div>
 
-      <div class="spruce-mode-switch" role="group" aria-label="Level material action">
-        <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
-        <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver</button>
+      <div class="spruce-mode-row">
+        <div class="spruce-mode-switch" role="group" aria-label="Level material action">
+          <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
+          <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver</button>
+        </div>
+        <label class="manual-entry-toggle"><input id="spruceManualEntry" type="checkbox" /> <span>Manual Entry</span></label>
       </div>
       <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" hidden style="display:none" />
 
       <section id="spruceEntryPanel" class="spruce-action-panel">
-        <div class="form-grid delivery-transaction-meta spruce-entry-meta spruce-entry-meta-three">
+        <div id="manualEntryMeta" class="form-grid delivery-transaction-meta spruce-entry-meta spruce-entry-meta-three manual-entry-only hidden">
           <label>Delivery Name<input id="spruceDeliveryCode" placeholder="e.g. L3D1" autocomplete="off" /></label>
           <label class="checkbox-field last-package-field"><span>Last Package of the Level</span><input id="spruceLastPackage" type="checkbox" /></label>
           <label>Spruce Order Note<input id="spruceOrderNote" placeholder="Optional — truck, phase, order note, etc." /></label>
@@ -390,18 +393,20 @@
           </div>
         </div>
 
-        <div class="delivery-actions">
+        <div id="manualEntryActions" class="delivery-actions manual-entry-only hidden">
           <button id="fillEntireLevel" type="button" class="button secondary">Use Entire Forecast</button>
           <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Quantities</button>
         </div>
 
-        <div class="delivery-material-search">
-          <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
-          <input id="deliveryMaterialSearch" type="search" placeholder="Search materials…" autocomplete="off" aria-label="Search delivery materials" />
-          <button id="clearDeliveryMaterialSearch" type="button" class="search-clear hidden" aria-label="Clear material search">×</button>
-        </div>
+        <div id="manualEntryMaterials" class="manual-entry-only hidden">
+          <div class="delivery-material-search">
+            <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+            <input id="deliveryMaterialSearch" type="search" placeholder="Search materials…" autocomplete="off" aria-label="Search delivery materials" />
+            <button id="clearDeliveryMaterialSearch" type="button" class="search-clear hidden" aria-label="Clear material search">×</button>
+          </div>
 
-        <div id="deliveryItems"></div>
+          <div id="deliveryItems"></div>
+        </div>
       </section>
 
       <section id="spruceDeliveryPanel" class="spruce-action-panel hidden">
@@ -583,6 +588,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.mjs?v=0.26"></script>
+  <script type="module" src="app.mjs?v=0.27"></script>
 </body>
 </html>

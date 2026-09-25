@@ -1453,3 +1453,33 @@ select { font: inherit; }
   .checkbox-field.last-package-field { flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px; }
   .checkbox-field.last-package-field input[type="checkbox"] { margin: 0; }
 }
+
+/* V0.27 PDF-first Spruce entry */
+.spruce-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.spruce-mode-row .spruce-mode-switch { margin-bottom: 0; }
+.manual-entry-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  user-select: none;
+}
+.manual-entry-toggle input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+@media (max-width: 720px) {
+  .spruce-mode-row { align-items: stretch; flex-direction: column; gap: 9px; }
+  .spruce-mode-row .spruce-mode-switch { width: 100%; }
+}

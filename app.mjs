@@ -2903,6 +2903,13 @@ function setForecastDateStatus(state = "idle") {
   node.dataset.state = state;
 }
 
+function syncManualEntryUi() {
+  const manual = $("spruceManualEntry")?.checked === true;
+  document.querySelectorAll(".manual-entry-only").forEach(node => node.classList.toggle("hidden", !manual));
+  const saveButton = $("saveSpruceOrder");
+  if (saveButton) saveButton.classList.toggle("hidden", deliveryActionMode !== "spruce" || !manual);
+}
+
 
 function refreshSpruceActionControls() {
   if (!activeDelivery) return;
@@ -2924,8 +2931,8 @@ function setDeliveryActionMode(mode) {
   $("spruceModeDelivery").classList.toggle("active", !entering);
   $("spruceEntryPanel").classList.toggle("hidden", !entering);
   $("spruceDeliveryPanel").classList.toggle("hidden", entering);
-  $("saveSpruceOrder").classList.toggle("hidden", !entering);
   refreshSpruceActionControls();
+  syncManualEntryUi();
   if (!entering) renderOpenSpruceOrders();
 }
 
@@ -2942,6 +2949,7 @@ function openDelivery(projectId, levelId) {
   $("deliveryNote").value = "";
   $("spruceOrderNote").value = "";
   $("spruceLastPackage").checked = false;
+  $("spruceManualEntry").checked = false;
   $("spruceDeliveryCode").value = suggestSpruceDeliveryCode(level);
   $("sprucePdfFile").value = "";
   $("spruceImportStatus").textContent = "";
@@ -4515,6 +4523,7 @@ function wireEvents() {
     setDeliveryActionMode("spruce");
   });
   $("spruceModeDelivery").addEventListener("click", () => setDeliveryActionMode("deliver"));
+  $("spruceManualEntry").addEventListener("change", syncManualEntryUi);
   $("spruceDeliveryCode").addEventListener("input", event => {
     const caret = event.target.selectionStart;
     event.target.value = String(event.target.value || "").toUpperCase().replace(/\s+/g, "");

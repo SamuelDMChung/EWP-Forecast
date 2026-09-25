@@ -1,6 +1,6 @@
 # EWP Material Forecast — Development Handoff
 
-**Canonical baseline:** V0.26  
+**Canonical baseline:** V0.27  
 **Project owner / developer credit:** Samuel Chung @ Griff
 
 This file is the canonical workflow and development handoff for future ChatGPT/code migrations. When continuing development in a new chat, upload the latest ZIP and tell ChatGPT to read this file before changing code.
@@ -250,3 +250,14 @@ No SQL migration is required for V0.25.
 - Removed historical `supabase_v0_17.sql`, `supabase_v0_19.sql`, and `supabase_v0_20.sql`.
 - Keep only the current `supabase_v0_26.sql` migration/reference file going forward unless a future migration replaces it.
 - `index.html` cache-busts the top-level frontend assets with `v=0.26`.
+
+
+### V0.27 PDF-first Put in Spruce UX
+
+- Put in Spruce is PDF-first by default.
+- A **Manual Entry** checkbox sits beside the Put in Spruce / Deliver switch and defaults to unchecked whenever Manage Level is opened.
+- When unchecked, manual-only controls are hidden: Delivery Name, Last Package of the Level, Spruce Order Note, Use Entire Forecast, Clear Quantities, manual material search/quantity table, and the manual Put in Spruce save button.
+- Import Delivery PDF remains visible and is the intended normal workflow. Delivery Name, Last Package of the Level, and Note remain editable in the PDF import review dialog.
+- Checking Manual Entry restores the full existing manual Spruce-entry workflow.
+- Deliver mode is unchanged.
+- V0.27 is frontend-only; no SQL migration is required beyond the existing V0.26 schema.

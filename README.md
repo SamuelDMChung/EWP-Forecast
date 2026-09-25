@@ -1,6 +1,19 @@
-# EWP Material Forecast — V0.26
+# EWP Material Forecast — V0.27
 
 **Developed by Samuel Chung @ Griff**
+
+
+## V0.27 changes
+
+V0.27 makes the Put in Spruce workflow PDF-first while keeping manual entry available as an explicit fallback.
+
+- Adds a visible **Manual Entry** checkbox beside **Put in Spruce / Deliver**. It is unchecked every time a level is opened.
+- With Manual Entry unchecked, the normal Put in Spruce view shows the **Import Delivery PDF** workflow only.
+- Delivery Name, Last Package of the Level, Spruce Order Note, Use Entire Forecast, Clear Quantities, the manual material-entry table/search, and the manual Put in Spruce save button are hidden until **Manual Entry** is checked.
+- PDF imports continue to collect **Delivery Name / Last Package of the Level / Note** in the PDF review dialog, so the preferred PDF workflow loses no functionality.
+- Deliver mode is unchanged.
+- No database migration is required for V0.27. Keep the existing V0.26 Supabase schema.
+- Frontend cache-busting updated to `v=0.27`.
 
 
 ## V0.26 changes
