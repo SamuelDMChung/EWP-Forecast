@@ -1,6 +1,32 @@
-# EWP Material Forecast — V0.18
+# EWP Material Forecast — V0.19
 
 **Developed by Samuel Chung @ Griff**
+
+
+## V0.19 changes
+
+V0.19 replaces the old level-wide **Planning Status** with quantity-based Spruce orders, matching the actual workflow: material can be partially committed to Spruce, but each Spruce order is delivered as one complete batch.
+
+- Removes the **Planning Status** dropdown from the level Manage window.
+- Adds two clear actions: **Put in Spruce** and **Deliver Spruce Order**.
+- **Put in Spruce** works by material quantity, so one level can simultaneously contain Delivered, In Spruce, Excluded and Forecast Remaining LF.
+- Adds **Put Entire Forecast in Spruce** for the common case where the whole remaining forecast is entered at once.
+- Each Spruce entry is saved as its own batch/order, preserving separate commitments if material is entered into Spruce at different times.
+- **Deliver Spruce Order** shows open Spruce batches and always moves the selected entire batch to Delivered. There is no partial-delivery input for an existing Spruce batch.
+- The **Actual Delivery Date** and delivery note appear only in Deliver Spruce Order mode.
+- Open Spruce batches can be **Removed from Spruce**, returning the entire batch to Forecast Remaining.
+- A delivered Spruce batch can be undone, which moves the entire batch back to In Spruce.
+- Existing pre-V0.19 delivery rows remain visible as **Legacy delivery** history and can still be undone.
+- Inventory committed demand now uses the exact LF currently in open Spruce batches instead of treating an entire level as committed. Multi/SFD forecast calculations use only the uncommitted Forecast Remaining LF, preventing double counting.
+- Level badges can now show **FORECAST**, **PARTLY IN SPRUCE**, **IN SPRUCE**, or **DELIVERED** based on quantities.
+- Revision imports are blocked when a revision would reduce required LF below quantities already delivered or committed in Spruce.
+- Adds database guards so concurrent users cannot commit more Spruce LF than remains available for a material.
+
+### Required Supabase change for V0.19
+
+Run **`supabase_v0_19.sql` before deploying the V0.19 frontend**. The script is idempotent and includes the earlier V0.16/V0.17 inventory and purchasing schema, so it is safe to run even if those migrations were already applied.
+
+The migration creates `spruce_orders` and `spruce_order_items`, adds authenticated RLS / Realtime access, and automatically converts any existing level whose old `workflow_status` is `spruce` into one open Spruce batch containing that level's current outstanding LF. The old level status is then reset to `forecast`; V0.19 no longer uses it for calculations.
 
 
 ## V0.18 changes
@@ -58,7 +84,7 @@ V0.16 expands the V0.15 project forecast into the inventory / purchasing workflo
 
 ### Required Supabase change for V0.16
 
-The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.18 package, **no new SQL is needed if V0.17 is already deployed**. If the database is still on V0.16 or earlier, run **`supabase_v0_17.sql`**; it includes these V0.16 schema additions plus the PO schema required by V0.17/V0.18.
+The historical V0.16 package used `supabase_v0_16.sql`. For the current V0.19 package, run **`supabase_v0_19.sql`**. It includes the V0.16/V0.17 inventory and purchasing schema plus the V0.19 Spruce-order tables, so the older migration files do not need to be run separately for a fresh upgrade.
 
 ## V0.15 changes
 
@@ -219,7 +245,8 @@ Put these files directly in the repository root:
 - `realtime.mjs`
 - `config.mjs`
 - `purchase_parser.mjs`
-- `supabase_v0_17.sql` (migration reference; run in Supabase SQL Editor before deployment)
+- `supabase_v0_19.sql` (**run this in Supabase SQL Editor before deploying V0.19**)
+- `supabase_v0_17.sql` (older migration reference only)
 - `.nojekyll`
 - `.gitignore`
 - `README.md`

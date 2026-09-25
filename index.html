@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">EWP PURCHASING</p>
       <h1>EWP Material Forecast</h1>
-      <p class="subtitle">Version 0.18 · Developed by Samuel Chung @ Griff</p>
+      <p class="subtitle">Version 0.19 · Developed by Samuel Chung @ Griff</p>
     </div>
     <div class="header-actions">
       <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
@@ -143,7 +143,7 @@
         <div class="section-heading-row">
           <div>
             <h3>6-Week Multi Delivery Schedule</h3>
-            <p class="small-note">Forecast = planned only. In Spruce = committed against inventory. Delivered levels leave the outstanding schedule automatically.</p>
+            <p class="small-note">Forecast = not yet committed. In Spruce = committed against inventory. A level can contain both until each Spruce order is delivered.</p>
           </div>
         </div>
         <div id="weeklyScheduleEmpty" class="empty-state compact-empty">No outstanding Multi-family levels are overdue or due within the next six weeks.</div>
@@ -154,7 +154,7 @@
         <div class="section-heading-row">
           <div>
             <h3>6-Week Material Demand</h3>
-            <p class="small-note">Outstanding Multi-family LF grouped by delivery week.</p>
+            <p class="small-note">Uncommitted Multi-family forecast LF grouped by delivery week. Material already in Spruce is tracked separately as committed inventory.</p>
           </div>
         </div>
         <div id="weeklyMaterialEmpty" class="empty-state compact-empty">No material demand falls within the next six weeks.</div>
@@ -165,7 +165,7 @@
         <div class="section-heading-row">
           <div>
             <h3>Monthly Material Forecast</h3>
-            <p class="small-note">Outstanding dated quantities only. SFD quantities are handled separately as a purchasing buffer in Inventory.</p>
+            <p class="small-note">Uncommitted dated quantities only. Material already in Spruce is tracked separately as committed inventory; SFD forecast quantities remain a purchasing buffer.</p>
           </div>
         </div>
         <div id="forecastEmpty" class="empty-state compact-empty">Add dated projects to see the monthly forecast.</div>
@@ -344,8 +344,8 @@
     <form method="dialog" id="deliveryForm">
       <div class="dialog-header">
         <div>
-          <p class="step">DELIVERY</p>
-          <h2 id="deliveryTitle">Record Delivery</h2>
+          <p class="step">SPRUCE / DELIVERY</p>
+          <h2 id="deliveryTitle">Manage Level</h2>
           <p id="deliverySubtitle" class="muted"></p>
         </div>
         <button value="cancel" class="icon-button" aria-label="Close">×</button>
@@ -353,37 +353,46 @@
 
       <div class="delivery-estimate-control planning-control">
         <label>Estimated Delivery Date<input id="forecastDateEdit" type="date" /></label>
-        <label>Planning Status
-          <select id="workflowStatusEdit">
-            <option value="forecast">Forecast</option>
-            <option value="spruce">In Spruce</option>
-          </select>
-        </label>
-        <button id="updateForecastDate" type="button" class="button secondary">Update Planning</button>
+        <button id="updateForecastDate" type="button" class="button secondary">Update Date</button>
       </div>
 
-      <div class="form-grid delivery-transaction-meta">
-        <label>Actual Delivery Date<input id="deliveryDate" type="date" required /></label>
-        <label>Delivery Note<input id="deliveryNote" placeholder="Optional — urgent truck, phase 1, etc." /></label>
+      <div class="spruce-mode-switch" role="group" aria-label="Level material action">
+        <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
+        <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver Spruce Order</button>
       </div>
 
-      <div class="delivery-actions">
-        <button id="fillEntireLevel" type="button" class="button secondary">Deliver Entire Remaining Level</button>
-        <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Delivery Inputs</button>
-      </div>
+      <section id="spruceEntryPanel" class="spruce-action-panel">
+        <div class="form-grid delivery-transaction-meta spruce-entry-meta">
+          <label>Spruce Order Note<input id="spruceOrderNote" placeholder="Optional — truck, phase, order note, etc." /></label>
+        </div>
 
-      <div class="delivery-material-search">
-        <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
-        <input id="deliveryMaterialSearch" type="search" placeholder="Search materials…" autocomplete="off" aria-label="Search delivery materials" />
-        <button id="clearDeliveryMaterialSearch" type="button" class="search-clear hidden" aria-label="Clear material search">×</button>
-      </div>
+        <div class="delivery-actions">
+          <button id="fillEntireLevel" type="button" class="button secondary">Put Entire Forecast in Spruce</button>
+          <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Inputs</button>
+        </div>
 
-      <div id="deliveryItems"></div>
+        <div class="delivery-material-search">
+          <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+          <input id="deliveryMaterialSearch" type="search" placeholder="Search materials…" autocomplete="off" aria-label="Search delivery materials" />
+          <button id="clearDeliveryMaterialSearch" type="button" class="search-clear hidden" aria-label="Clear material search">×</button>
+        </div>
+
+        <div id="deliveryItems"></div>
+      </section>
+
+      <section id="spruceDeliveryPanel" class="spruce-action-panel hidden">
+        <div class="form-grid delivery-transaction-meta">
+          <label>Actual Delivery Date<input id="deliveryDate" type="date" /></label>
+          <label>Delivery Note<input id="deliveryNote" placeholder="Optional — truck, site note, etc." /></label>
+        </div>
+        <p class="small-note spruce-delivery-help">Choose an open Spruce order below. Delivery always moves that entire Spruce order to Delivered.</p>
+        <div id="openSpruceOrders" class="spruce-order-list"></div>
+      </section>
 
       <div class="dialog-footer">
         <button id="removeLevel" type="button" class="button ghost danger-action">Remove Level from Project</button>
         <button value="cancel" class="button ghost">Close</button>
-        <button id="saveDelivery" type="button" class="button primary">Record Delivery</button>
+        <button id="saveSpruceOrder" type="button" class="button primary">Put in Spruce</button>
       </div>
 
       <div id="deliveryHistory" class="history"></div>

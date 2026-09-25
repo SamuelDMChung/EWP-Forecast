@@ -6,7 +6,7 @@ import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 19;
 const EPSILON = 0.0001;
 const HISTORY_PAGE_SIZE = 100;
 
@@ -18,6 +18,7 @@ let activeDelivery = null;
 let activeEditProject = null;
 let activeDeleteProject = null;
 let activeMaterialExclusion = null;
+let deliveryActionMode = "spruce";
 let matrixScrollLeft = 0;
 let matrixScrollTop = 0;
 let syncInProgress = false;
@@ -173,7 +174,8 @@ function migrateLegacyState(parsed) {
         id: level.id || uid(),
         name: level.name || `Level ${levelIndex + 1}`,
         estimatedDeliveryDate: level.estimatedDeliveryDate || "",
-        workflowStatus: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+        workflowStatus: "forecast",
+        spruceOrders: [],
         displayOrder: Number(level.displayOrder ?? levelIndex),
         version: Number(level.version || 1),
         materials: (level.materials || []).map(material => ({
@@ -251,7 +253,8 @@ function mapCloudRows(rows) {
       projectId: row.project_id,
       name: row.level_name || "",
       estimatedDeliveryDate: row.estimated_delivery_date || "",
-      workflowStatus: row.workflow_status === "spruce" ? "spruce" : "forecast",
+      workflowStatus: "forecast",
+      spruceOrders: [],
       isActive: row.is_active !== false,
       displayOrder: Number(row.display_order || 0),
       createdAt: row.created_at || "",
@@ -308,6 +311,42 @@ function mapCloudRows(rows) {
     }
     batch.rowIds.push(row.id);
     batch.items.push({ materialId: material.id, material: material.material, lf: Number(row.delivered_lf || 0) });
+  }
+
+  const spruceOrderMap = new Map();
+  for (const row of rows.spruceOrders || []) {
+    const level = levelMap.get(row.level_id);
+    if (!level) continue;
+    const order = {
+      id: row.id,
+      levelId: row.level_id,
+      enteredAt: row.entered_at || row.created_at || "",
+      note: row.note || "",
+      deliveredAt: row.delivered_at || "",
+      deliveryNote: row.delivery_note || "",
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || "",
+      version: Number(row.version || 1),
+      items: []
+    };
+    spruceOrderMap.set(order.id, order);
+    level.spruceOrders.push(order);
+  }
+
+  for (const row of rows.spruceOrderItems || []) {
+    const order = spruceOrderMap.get(row.spruce_order_id);
+    if (!order) continue;
+    const material = materialMap.get(row.material_id);
+    order.items.push({
+      id: row.id,
+      materialId: row.material_id || "",
+      material: row.material_name || material?.material || "",
+      lf: Number(row.quantity_lf || 0)
+    });
+  }
+
+  for (const level of levelMap.values()) {
+    level.spruceOrders.sort((a, b) => (a.enteredAt || "").localeCompare(b.enteredAt || ""));
   }
 
   const inventoryMaterials = (rows.inventoryMaterials || []).map(row => ({
@@ -501,7 +540,13 @@ function normalizeMaterialKey(material) {
   return signature ? `product-size:${signature}` : normalizeLiteralMaterialKey(normalizePoMaterialDescription(material));
 }
 
-function deliveryTotals(level) {
+function materialQuantityFromTotals(totals, material) {
+  const idKey = `id:${material.id}`;
+  if (totals.has(idKey)) return Number(totals.get(idKey) || 0);
+  return Number(totals.get(`name:${normalizeMaterialKey(material.material)}`) || 0);
+}
+
+function legacyDeliveryTotals(level) {
   const totals = new Map();
   for (const delivery of level.deliveries || []) {
     for (const item of delivery.items || []) {
@@ -512,9 +557,50 @@ function deliveryTotals(level) {
   return totals;
 }
 
+function spruceTotals(level, { delivered = null } = {}) {
+  const totals = new Map();
+  for (const order of level.spruceOrders || []) {
+    const isDelivered = Boolean(order.deliveredAt);
+    if (delivered === true && !isDelivered) continue;
+    if (delivered === false && isDelivered) continue;
+    for (const item of order.items || []) {
+      const key = item.materialId ? `id:${item.materialId}` : `name:${normalizeMaterialKey(item.material)}`;
+      totals.set(key, (totals.get(key) || 0) + Number(item.lf || 0));
+    }
+  }
+  return totals;
+}
+
+function openSpruceOrders(level) {
+  return (level.spruceOrders || [])
+    .filter(order => !order.deliveredAt && (order.items || []).some(item => Number(item.lf || 0) > EPSILON))
+    .sort((a, b) => (a.enteredAt || a.createdAt || "").localeCompare(b.enteredAt || b.createdAt || ""));
+}
+
+function deliveredSpruceOrders(level) {
+  return (level.spruceOrders || [])
+    .filter(order => Boolean(order.deliveredAt))
+    .sort((a, b) => (b.deliveredAt || "").localeCompare(a.deliveredAt || ""));
+}
+
+function spruceOrderTotal(order) {
+  return (order.items || []).reduce((sum, item) => sum + Number(item.lf || 0), 0);
+}
+
+function legacyDeliveredFor(level, material) {
+  return Math.max(0, materialQuantityFromTotals(legacyDeliveryTotals(level), material));
+}
+
+function deliveredFromSpruceFor(level, material) {
+  return Math.max(0, materialQuantityFromTotals(spruceTotals(level, { delivered: true }), material));
+}
+
+function inSpruceFor(level, material) {
+  return Math.max(0, materialQuantityFromTotals(spruceTotals(level, { delivered: false }), material));
+}
+
 function deliveredFor(level, material) {
-  const totals = deliveryTotals(level);
-  return Math.max(0, Number(totals.get(`id:${material.id}`) ?? totals.get(`name:${normalizeMaterialKey(material.material)}`) ?? 0));
+  return legacyDeliveredFor(level, material) + deliveredFromSpruceFor(level, material);
 }
 
 function excludedFor(material) {
@@ -525,35 +611,47 @@ function outstandingFor(level, material) {
   return Math.max(0, Number(material.requiredLf || 0) - deliveredFor(level, material) - excludedFor(material));
 }
 
+function forecastRemainingFor(level, material) {
+  return Math.max(0, outstandingFor(level, material) - inSpruceFor(level, material));
+}
+
 function levelStats(level) {
   let required = 0;
   let delivered = 0;
+  let inSpruce = 0;
   let excluded = 0;
   let outstanding = 0;
+  let forecastRemaining = 0;
   for (const material of level.materials || []) {
     required += Number(material.requiredLf || 0);
     delivered += deliveredFor(level, material);
+    inSpruce += inSpruceFor(level, material);
     excluded += excludedFor(material);
     outstanding += outstandingFor(level, material);
+    forecastRemaining += forecastRemainingFor(level, material);
   }
   const resolved = Math.min(required, delivered + excluded);
   const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
   const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
-  return { required, delivered, excluded, outstanding, percent, status };
+  return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status };
 }
 
 function projectStats(project) {
   let required = 0;
   let delivered = 0;
+  let inSpruce = 0;
   let excluded = 0;
   let outstanding = 0;
+  let forecastRemaining = 0;
   const incompleteLevels = [];
   (project.levels || []).forEach((level, index) => {
     const stats = levelStats(level);
     required += stats.required;
     delivered += stats.delivered;
+    inSpruce += stats.inSpruce;
     excluded += stats.excluded;
     outstanding += stats.outstanding;
+    forecastRemaining += stats.forecastRemaining;
     if (stats.outstanding > EPSILON) incompleteLevels.push({ level, stats, index });
   });
   incompleteLevels.sort((a, b) => {
@@ -564,7 +662,7 @@ function projectStats(project) {
   const resolved = Math.min(required, delivered + excluded);
   const percent = required > EPSILON ? Math.max(0, Math.min(100, (resolved / required) * 100)) : 0;
   const status = outstanding <= EPSILON ? "delivered" : resolved > EPSILON ? "partial" : "upcoming";
-  return { required, delivered, excluded, outstanding, percent, status, packagesRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
+  return { required, delivered, inSpruce, excluded, outstanding, forecastRemaining, percent, status, packagesRemaining: incompleteLevels.length, nextLevel: incompleteLevels[0]?.level || null };
 }
 
 function allLevels() {
@@ -598,12 +696,16 @@ function statusLabel(status) {
 }
 
 function planningStatus(level) {
-  if (levelStats(level).outstanding <= EPSILON) return "delivered";
-  return level.workflowStatus === "spruce" ? "spruce" : "forecast";
+  const stats = levelStats(level);
+  if (stats.outstanding <= EPSILON) return "delivered";
+  if (stats.inSpruce > EPSILON && stats.forecastRemaining > EPSILON) return "mixed";
+  if (stats.inSpruce > EPSILON) return "spruce";
+  return "forecast";
 }
 
 function planningStatusLabel(status) {
   if (status === "spruce") return "IN SPRUCE";
+  if (status === "mixed") return "PARTLY IN SPRUCE";
   if (status === "delivered") return "DELIVERED";
   return "FORECAST";
 }
@@ -752,7 +854,7 @@ function updateProjectTypeUi() {
   const isSfd = $("projectType")?.value === "sfd";
   const hint = $("projectTypeHint");
   if (hint) hint.textContent = isSfd
-    ? "SFD dates are optional. Outstanding SFD material is grouped into the purchasing buffer unless the package is marked In Spruce."
+    ? "SFD dates are optional. Uncommitted SFD material is grouped into the purchasing buffer; any quantities put in Spruce are tracked separately as committed demand."
     : "Multi-family levels appear in the 6-week delivery schedule. Estimated delivery dates are required.";
   if (draft) draft.projectType = isSfd ? "sfd" : "multi";
 }
@@ -842,6 +944,8 @@ function projectToCloudRows(project) {
   const levelRows = [];
   const materialRows = [];
   const deliveryRows = [];
+  const spruceOrderRows = [];
+  const spruceOrderItemRows = [];
   const levelIdMap = new Map();
   const materialIdMap = new Map();
 
@@ -853,7 +957,7 @@ function projectToCloudRows(project) {
       project_id: projectId,
       level_name: level.name,
       estimated_delivery_date: level.estimatedDeliveryDate || null,
-      workflow_status: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+      workflow_status: "forecast",
       is_active: true,
       display_order: levelIndex,
       version: 1
@@ -867,6 +971,9 @@ function projectToCloudRows(project) {
         level_id: levelId,
         material_name: material.material,
         original_lf: Number(material.requiredLf || 0),
+        excluded_lf: Math.max(0, Number(material.excludedLf || 0)),
+        exclusion_reason: material.exclusionReason || null,
+        exclusion_note: material.exclusionNote || null,
         is_active: true,
         version: 1
       });
@@ -900,9 +1007,44 @@ function projectToCloudRows(project) {
         });
       }
     });
+
+    (level.spruceOrders || []).forEach(order => {
+      const spruceOrderId = uid();
+      spruceOrderRows.push({
+        id: spruceOrderId,
+        level_id: levelId,
+        entered_at: order.enteredAt || order.createdAt || new Date().toISOString(),
+        note: order.note || null,
+        delivered_at: order.deliveredAt || null,
+        delivery_note: order.deliveryNote || null,
+        version: 1
+      });
+      for (const item of order.items || []) {
+        let materialId = null;
+        const match = (level.materials || []).find((material, materialIndex) => {
+          if (item.materialId && material.id === item.materialId) {
+            materialId = materialIdMap.get(`${level.id || levelIndex}|${material.id || materialIndex}|${normalizeMaterialKey(material.material)}`);
+            return true;
+          }
+          return normalizeMaterialKey(material.material) === normalizeMaterialKey(item.material);
+        });
+        if (!materialId && match) {
+          const materialIndex = level.materials.indexOf(match);
+          materialId = materialIdMap.get(`${level.id || levelIndex}|${match.id || materialIndex}|${normalizeMaterialKey(match.material)}`);
+        }
+        if (!materialId) continue;
+        spruceOrderItemRows.push({
+          id: uid(),
+          spruce_order_id: spruceOrderId,
+          material_id: materialId,
+          material_name: item.material || match?.material || "",
+          quantity_lf: Number(item.lf || 0)
+        });
+      }
+    });
   });
 
-  return { projectId, projectRow, levelRows, materialRows, deliveryRows };
+  return { projectId, projectRow, levelRows, materialRows, deliveryRows, spruceOrderRows, spruceOrderItemRows };
 }
 
 async function createProjectGraph(project) {
@@ -914,6 +1056,8 @@ async function createProjectGraph(project) {
     if (rows.levelRows.length) await insertRows("levels", rows.levelRows);
     if (rows.materialRows.length) await insertRows("materials", rows.materialRows);
     if (rows.deliveryRows.length) await insertRows("deliveries", rows.deliveryRows);
+    if (rows.spruceOrderRows.length) await insertRows("spruce_orders", rows.spruceOrderRows);
+    if (rows.spruceOrderItemRows.length) await insertRows("spruce_order_items", rows.spruceOrderItemRows);
     return rows.projectId;
   } catch (error) {
     if (insertedProject) {
@@ -1065,6 +1209,40 @@ function openProjectReview() {
 }
 
 async function reconcileProjectRevision(existing, projectRecord) {
+  // Validate committed quantities before changing any project rows. A revision cannot
+  // reduce a material below quantities that are already delivered or sitting in Spruce.
+  const incomingLevelKeys = new Set((projectRecord.levels || []).map(level => normalizeSpaces(level.name).toLowerCase()));
+  for (const incomingLevel of projectRecord.levels || []) {
+    const existingLevel = (existing.levels || []).find(level => normalizeSpaces(level.name).toLowerCase() === normalizeSpaces(incomingLevel.name).toLowerCase());
+    if (!existingLevel) continue;
+    const incomingKeys = new Set();
+    for (const incomingMaterial of validDraftMaterials(incomingLevel)) {
+      const key = normalizeMaterialKey(incomingMaterial.material);
+      incomingKeys.add(key);
+      const existingMaterial = (existingLevel.materials || []).find(material => normalizeMaterialKey(material.material) === key);
+      if (!existingMaterial) continue;
+      const locked = deliveredFor(existingLevel, existingMaterial) + inSpruceFor(existingLevel, existingMaterial);
+      const nextRequired = Number(incomingMaterial.requiredLf || 0);
+      if (nextRequired + EPSILON < locked) {
+        throw new Error(`${incomingLevel.name} — ${incomingMaterial.material} is revised to ${formatNumber(nextRequired)} LF, but ${formatNumber(locked)} LF is already delivered or in Spruce. Remove the open Spruce commitment or review the revision before importing it.`);
+      }
+    }
+    for (const existingMaterial of existingLevel.materials || []) {
+      if (incomingKeys.has(normalizeMaterialKey(existingMaterial.material))) continue;
+      const committed = inSpruceFor(existingLevel, existingMaterial);
+      if (committed > EPSILON) {
+        throw new Error(`${incomingLevel.name} — ${existingMaterial.material} is removed by this revision, but ${formatNumber(committed)} LF is still in Spruce. Remove that Spruce order before importing the revision.`);
+      }
+    }
+  }
+  for (const existingLevel of existing.levels || []) {
+    if (incomingLevelKeys.has(normalizeSpaces(existingLevel.name).toLowerCase())) continue;
+    const committed = levelStats(existingLevel).inSpruce;
+    if (committed > EPSILON) {
+      throw new Error(`${existingLevel.name} is removed by this revision, but ${formatNumber(committed)} LF is still in Spruce. Remove those Spruce orders before importing the revision.`);
+    }
+  }
+
   const now = new Date().toISOString();
   const updatedProject = await updateRows("projects", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, {
     project_number: projectRecord.projectNumber,
@@ -1147,8 +1325,9 @@ async function reconcileProjectRevision(existing, projectRecord) {
       usedMaterialIds.add(existingMaterial.id);
       const nextRequired = Number(incomingMaterial.requiredLf || 0);
       const delivered = deliveredFor(existingLevel, existingMaterial);
+      const inSpruce = inSpruceFor(existingLevel, existingMaterial);
       const priorExcluded = excludedFor(existingMaterial);
-      const nextExcluded = Math.min(priorExcluded, Math.max(0, nextRequired - delivered));
+      const nextExcluded = Math.min(priorExcluded, Math.max(0, nextRequired - delivered - inSpruce));
       if (Math.abs(nextExcluded - priorExcluded) > EPSILON) summary.exclusionsAdjusted += 1;
       const materialUpdated = await updateRows("materials", { id: `eq.${existingMaterial.id}`, version: `eq.${existingMaterial.version}` }, {
         material_name: incomingMaterial.material,
@@ -1622,7 +1801,7 @@ function renderWeeklyMaterialForecast() {
   const empty = $("weeklyMaterialEmpty");
   if (!wrap || !empty) return;
   const weeks = sixWeekStarts();
-  const refs = sixWeekMultiLevels();
+  const refs = sixWeekMultiLevels().filter(({ level }) => levelStats(level).forecastRemaining > EPSILON);
   const materials = uniqueMaterials(refs);
   if (!refs.length || !materials.length) {
     empty.classList.remove("hidden");
@@ -1638,20 +1817,20 @@ function renderWeeklyMaterialForecast() {
       for (const { level } of refs) {
         if (weekIndexForDate(level.estimatedDeliveryDate, firstWeek) !== weekIndex) continue;
         for (const material of level.materials || []) {
-          if (normalizeMaterialKey(material.material) === key) total += outstandingFor(level, material);
+          if (normalizeMaterialKey(material.material) === key) total += forecastRemainingFor(level, material);
         }
       }
       return `<td class="${total > EPSILON ? "month-total" : "cell-zero"}">${total > EPSILON ? formatNumber(total) : "—"}</td>`;
     }).join("");
     return `<tr><td class="material-col">${escapeHtml(materialName)}</td>${cells}</tr>`;
   }).join("");
-  wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Outstanding LF</th>${weeks.map((week, index) => `<th>W${index + 1}<span class="table-head-sub">${escapeHtml(weekLabel(week))}</span></th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Forecast Remaining LF</th>${weeks.map((week, index) => `<th>W${index + 1}<span class="table-head-sub">${escapeHtml(weekLabel(week))}</span></th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
   wrap.classList.remove("hidden");
   empty.classList.add("hidden");
 }
 
 function renderMonthlyForecast() {
-  const datedLevels = allLevels().filter(({ project, level }) => project.projectType !== "sfd" && level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
+  const datedLevels = allLevels().filter(({ project, level }) => project.projectType !== "sfd" && level.estimatedDeliveryDate && levelStats(level).forecastRemaining > EPSILON);
   const months = [...new Set(datedLevels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(datedLevels);
   const wrap = $("forecastWrap");
@@ -1671,7 +1850,7 @@ function renderMonthlyForecast() {
       for (const { level } of datedLevels) {
         if (monthKey(level.estimatedDeliveryDate) !== month) continue;
         for (const material of level.materials || []) {
-          if (normalizeMaterialKey(material.material) === key) total += outstandingFor(level, material);
+          if (normalizeMaterialKey(material.material) === key) total += forecastRemainingFor(level, material);
         }
       }
       return `<td class="${total > 0 ? "month-total" : "cell-zero"}">${total > 0 ? formatNumber(total) : "—"}</td>`;
@@ -1679,7 +1858,7 @@ function renderMonthlyForecast() {
     return `<tr><td class="material-col">${escapeHtml(materialName)}</td>${cells}</tr>`;
   }).join("");
 
-  wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Outstanding LF</th>${months.map(month => `<th>${escapeHtml(monthLabel(month))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
+  wrap.innerHTML = `<table><thead><tr><th class="material-col">Material / Forecast Remaining LF</th>${months.map(month => `<th>${escapeHtml(monthLabel(month))}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`;
   wrap.classList.remove("hidden");
   empty.classList.add("hidden");
 }
@@ -1732,15 +1911,15 @@ function demandBreakdownFor(materialName, leadTimeWeeks = 6) {
   for (const { project, level } of allLevels()) {
     for (const material of level.materials || []) {
       if (normalizeMaterialKey(material.material) !== key) continue;
-      const outstanding = outstandingFor(level, material);
-      if (outstanding <= EPSILON) continue;
-      if (level.workflowStatus === "spruce") {
-        committed += outstanding;
-      } else if (project.projectType === "sfd") {
-        sfdBuffer += outstanding;
+      const committedLf = inSpruceFor(level, material);
+      const forecastLf = forecastRemainingFor(level, material);
+      if (committedLf > EPSILON) committed += committedLf;
+      if (forecastLf <= EPSILON) continue;
+      if (project.projectType === "sfd") {
+        sfdBuffer += forecastLf;
       } else {
-        multiForecast += outstanding;
-        if (level.estimatedDeliveryDate && level.estimatedDeliveryDate <= cutoff) multiDueInLeadTime += outstanding;
+        multiForecast += forecastLf;
+        if (level.estimatedDeliveryDate && level.estimatedDeliveryDate <= cutoff) multiDueInLeadTime += forecastLf;
       }
     }
   }
@@ -2306,7 +2485,11 @@ const ACTIVITY_LABELS = {
   update_project: "Project edited",
   update_forecast_date: "Estimated delivery date changed",
   update_level_planning: "Level planning updated",
-  record_delivery: "Delivery recorded",
+  put_in_spruce: "Material put in Spruce",
+  remove_from_spruce: "Spruce order removed",
+  deliver_spruce_order: "Spruce order delivered",
+  undo_spruce_delivery: "Spruce delivery undone",
+  record_delivery: "Legacy delivery recorded",
   undo_delivery: "Delivery undone",
   exclude_material_forecast: "Material excluded",
   adjust_material_forecast: "Material exclusion adjusted",
@@ -2353,16 +2536,23 @@ function activityEntityContext(row) {
 
 function activityDetailText(row) {
   const d = row?.details && typeof row.details === "object" ? row.details : {};
+  if (["put_in_spruce", "remove_from_spruce", "deliver_spruce_order"].includes(row.action)) {
+    const items = Array.isArray(d.items) ? d.items.map(item => `${item.material}: ${formatNumber(item.lf)} LF`).join("; ") : "";
+    const order = d.spruce_order_number ? `Spruce Order #${d.spruce_order_number}` : "Spruce order";
+    const date = d.delivery_date ? `Delivered ${formatDate(d.delivery_date)}` : "";
+    return [order, date, d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF` : "", items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
+  }
+  if (row.action === "undo_spruce_delivery") return [d.spruce_order_number ? `Spruce Order #${d.spruce_order_number}` : "Spruce order", d.delivery_date ? `Delivery ${formatDate(d.delivery_date)} undone` : "Delivery undone", d.total_lf !== undefined ? `${formatNumber(d.total_lf)} LF back in Spruce` : ""].filter(Boolean).join(" · ");
   if (row.action === "record_delivery") {
     const items = Array.isArray(d.items) ? d.items.map(item => `${item.material}: ${formatNumber(item.lf)} LF`).join("; ") : "";
     return [d.delivery_date ? `Delivery ${formatDate(d.delivery_date)}` : "", items, d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ") || "Delivery recorded";
   }
-  if (row.action === "undo_delivery") return d.delivery_date ? `Reversed delivery dated ${formatDate(d.delivery_date)}` : "Delivery quantities restored";
+  if (row.action === "undo_delivery") return d.delivery_date ? `Reversed legacy delivery dated ${formatDate(d.delivery_date)}` : "Legacy delivery quantities restored";
   if (["exclude_material_forecast", "adjust_material_forecast", "restore_material_forecast"].includes(row.action)) {
     const amount = `${formatNumber(d.from_excluded_lf || 0)} → ${formatNumber(d.to_excluded_lf || 0)} LF excluded`;
     return [d.material_name || "Material", amount, d.reason ? `Reason: ${d.reason}` : "", d.note ? `Note: ${d.note}` : ""].filter(Boolean).join(" · ");
   }
-  if (row.action === "update_forecast_date") return `${formatDate(d.from)} → ${formatDate(d.to)}`;
+  if (row.action === "update_forecast_date") return `${formatDate(d.from_date || d.from)} → ${formatDate(d.to_date || d.to)}`;
   if (row.action === "update_level_planning") return [
     `Date: ${d.from_date ? formatDate(d.from_date) : "No date"} → ${d.to_date ? formatDate(d.to_date) : "No date"}`,
     `Status: ${planningStatusLabel(d.from_status || "forecast")} → ${planningStatusLabel(d.to_status || "forecast")}`
@@ -2543,21 +2733,39 @@ function renderAll() {
   if (document.getElementById("history")?.classList.contains("active") && historyLoaded) renderHistory();
 }
 
+function deliverySubtitleText(project, level) {
+  return `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Estimated delivery ${formatDate(level.estimatedDeliveryDate)}`;
+}
+
+
+function setDeliveryActionMode(mode) {
+  deliveryActionMode = mode === "deliver" ? "deliver" : "spruce";
+  const entering = deliveryActionMode === "spruce";
+  $("spruceModeEntry").classList.toggle("active", entering);
+  $("spruceModeDelivery").classList.toggle("active", !entering);
+  $("spruceEntryPanel").classList.toggle("hidden", !entering);
+  $("spruceDeliveryPanel").classList.toggle("hidden", entering);
+  $("saveSpruceOrder").classList.toggle("hidden", !entering);
+  if (!entering) renderOpenSpruceOrders();
+}
+
 function openDelivery(projectId, levelId) {
   const project = state.projects.find(item => item.id === projectId);
   const level = project?.levels.find(item => item.id === levelId);
   if (!project || !level) return;
   activeDelivery = { project, level };
   $("deliveryTitle").textContent = `${projectTitle(project)} — ${level.name}`;
-  $("deliverySubtitle").textContent = `${project.projectNumber}${project.revision ? ` · ${project.revision}` : ""} · ${project.customer ? `Customer: ${project.customer} · ` : ""}${project.sales ? `Sales: ${project.sales} · ` : ""}Estimated delivery ${formatDate(level.estimatedDeliveryDate)}`;
+  $("deliverySubtitle").textContent = deliverySubtitleText(project, level);
   $("forecastDateEdit").value = level.estimatedDeliveryDate || "";
-  $("workflowStatusEdit").value = level.workflowStatus === "spruce" ? "spruce" : "forecast";
   $("deliveryDate").value = todayIso();
   $("deliveryNote").value = "";
+  $("spruceOrderNote").value = "";
   $("deliveryMaterialSearch").value = "";
   $("clearDeliveryMaterialSearch").classList.add("hidden");
   renderDeliveryItems();
+  renderOpenSpruceOrders();
   renderDeliveryHistory();
+  setDeliveryActionMode("spruce");
   $("deliveryDialog").showModal();
 }
 
@@ -2573,23 +2781,53 @@ function renderDeliveryItems() {
   if (!activeDelivery) return;
   const { level } = activeDelivery;
   const rows = level.materials.map(material => {
-    const remaining = outstandingFor(level, material);
     const delivered = deliveredFor(level, material);
+    const inSpruce = inSpruceFor(level, material);
     const excluded = excludedFor(material);
-    const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered);
+    const forecastRemaining = forecastRemainingFor(level, material);
+    const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered - inSpruce);
     const actionLabel = excluded > EPSILON ? "Adjust" : "Exclude";
     return `<tr class="delivery-material-row" data-material-search="${escapeHtml(normalizeMaterialKey(material.material))}">
       <td>${escapeHtml(material.material)}</td>
       <td>${formatNumber(material.requiredLf)}</td>
       <td>${formatNumber(delivered)}</td>
+      <td class="spruce-committed-cell">${inSpruce > EPSILON ? formatNumber(inSpruce) : "0"}</td>
       <td class="material-excluded-cell">${excluded > EPSILON ? formatNumber(excluded) : "0"}</td>
-      <td><strong>${formatNumber(remaining)}</strong></td>
-      <td><input class="delivery-input" data-material-id="${escapeHtml(material.id)}" type="number" min="0" max="${remaining}" step="0.01" value="0" ${remaining <= EPSILON ? "disabled" : ""} /></td>
+      <td class="forecast-remaining-cell">${formatNumber(forecastRemaining)}</td>
+      <td><input class="delivery-input" data-material-id="${escapeHtml(material.id)}" type="number" min="0" max="${forecastRemaining}" step="0.01" value="0" ${forecastRemaining <= EPSILON ? "disabled" : ""} /></td>
       <td class="forecast-action-cell"><button type="button" class="mini-button exclude-material" data-material-id="${escapeHtml(material.id)}" ${maxExcludable <= EPSILON && excluded <= EPSILON ? "disabled" : ""}>${actionLabel}</button></td>
     </tr>`;
   }).join("");
-  $("deliveryItems").innerHTML = `<div class="table-wrap"><table class="delivery-table"><thead><tr><th>Material</th><th>Original</th><th>Delivered</th><th>Excluded</th><th>Remaining</th><th>Deliver now</th><th>Forecast</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  $("deliveryItems").innerHTML = `<div class="table-wrap"><table class="delivery-table"><thead><tr><th>Material</th><th>Original</th><th>Delivered</th><th>In Spruce</th><th>Excluded</th><th>Forecast Remaining</th><th>Put in Spruce</th><th>Adjust Forecast</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   applyDeliveryMaterialFilter();
+}
+
+function renderOpenSpruceOrders() {
+  if (!activeDelivery) return;
+  const orders = openSpruceOrders(activeDelivery.level);
+  if (!orders.length) {
+    $("openSpruceOrders").innerHTML = `<div class="spruce-order-empty">No material is currently in Spruce for this level.</div>`;
+    return;
+  }
+  $("openSpruceOrders").innerHTML = orders.map(order => {
+    const enteredAt = order.enteredAt || order.createdAt || "";
+    return `<article class="spruce-order-card">
+      <div class="spruce-order-card-head">
+        <div>
+          <strong>Spruce Order</strong>
+          <p class="small-note">Entered ${escapeHtml(formatDateTime(enteredAt))}${order.note ? ` · ${escapeHtml(order.note)}` : ""}</p>
+        </div>
+        <span class="spruce-order-total">${formatNumber(spruceOrderTotal(order))} LF</span>
+      </div>
+      <div class="spruce-order-items">
+        ${(order.items || []).map(item => `<div class="spruce-order-item"><span>${escapeHtml(item.material)}</span><strong>${formatNumber(item.lf)} LF</strong></div>`).join("")}
+      </div>
+      <div class="spruce-order-card-actions">
+        <button type="button" class="button ghost remove-spruce-order" data-spruce-order-id="${escapeHtml(order.id)}">Remove from Spruce</button>
+        <button type="button" class="button primary deliver-spruce-order" data-spruce-order-id="${escapeHtml(order.id)}">Deliver Entire Spruce Order</button>
+      </div>
+    </article>`;
+  }).join("");
 }
 
 function openMaterialExclusion(materialId) {
@@ -2597,11 +2835,12 @@ function openMaterialExclusion(materialId) {
   const material = activeDelivery.level.materials.find(item => item.id === materialId);
   if (!material) return;
   const delivered = deliveredFor(activeDelivery.level, material);
+  const inSpruce = inSpruceFor(activeDelivery.level, material);
   const currentExcluded = excludedFor(material);
-  const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered);
+  const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered - inSpruce);
   activeMaterialExclusion = { materialId: material.id };
   $("materialExclusionTitle").textContent = currentExcluded > EPSILON ? "Adjust Forecast Exclusion" : "Exclude Material from Forecast";
-  $("materialExclusionSummary").textContent = `${material.material} · Original ${formatNumber(material.requiredLf)} LF · Delivered ${formatNumber(delivered)} LF · Up to ${formatNumber(maxExcludable)} LF can be excluded.`;
+  $("materialExclusionSummary").textContent = `${material.material} · Original ${formatNumber(material.requiredLf)} LF · Delivered ${formatNumber(delivered)} LF · In Spruce ${formatNumber(inSpruce)} LF · Up to ${formatNumber(maxExcludable)} LF can be excluded.`;
   $("materialExcludedLf").value = currentExcluded;
   $("materialExcludedLf").max = maxExcludable;
   $("materialExclusionReason").value = material.exclusionReason || "Customer supplied / pre-ordered";
@@ -2623,7 +2862,8 @@ async function saveMaterialExclusion({ restore = false } = {}) {
   if (!material) return alert("This material no longer exists in the shared data.");
 
   const delivered = deliveredFor(activeDelivery.level, material);
-  const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered);
+  const inSpruce = inSpruceFor(activeDelivery.level, material);
+  const maxExcludable = Math.max(0, Number(material.requiredLf || 0) - delivered - inSpruce);
   const nextExcluded = restore ? 0 : requestedValue;
   if (nextExcluded > maxExcludable + EPSILON) {
     $("materialExcludedLf").max = maxExcludable;
@@ -2649,9 +2889,10 @@ async function saveMaterialExclusion({ restore = false } = {}) {
     material_name: material.material,
     original_lf: Number(material.requiredLf || 0),
     delivered_lf: delivered,
+    in_spruce_lf: inSpruce,
     from_excluded_lf: previousExcluded,
     to_excluded_lf: nextExcluded,
-    remaining_lf: Math.max(0, Number(material.requiredLf || 0) - delivered - nextExcluded),
+    remaining_lf: Math.max(0, Number(material.requiredLf || 0) - delivered - inSpruce - nextExcluded),
     reason,
     note
   });
@@ -2673,19 +2914,42 @@ async function saveMaterialExclusion({ restore = false } = {}) {
 function renderDeliveryHistory() {
   if (!activeDelivery) return;
   const { level } = activeDelivery;
-  const history = [...(level.deliveries || [])].sort((a, b) => (b.deliveredAt || b.date || "").localeCompare(a.deliveredAt || a.date || ""));
+  const spruceHistory = deliveredSpruceOrders(level).map(order => ({
+    type: "spruce",
+    sortAt: order.deliveredAt || "",
+    order
+  }));
+  const legacyHistory = (level.deliveries || []).map(delivery => ({
+    type: "legacy",
+    sortAt: delivery.deliveredAt || delivery.date || "",
+    delivery
+  }));
+  const history = [...spruceHistory, ...legacyHistory].sort((a, b) => (b.sortAt || "").localeCompare(a.sortAt || ""));
   if (!history.length) {
     $("deliveryHistory").innerHTML = `<h3>Delivery history</h3><p class="small-note">No deliveries recorded for this level.</p>`;
     return;
   }
-  $("deliveryHistory").innerHTML = `<h3>Delivery history</h3>${history.map(delivery => `
-    <div class="history-item">
+  $("deliveryHistory").innerHTML = `<h3>Delivery history</h3>${history.map(entry => {
+    if (entry.type === "spruce") {
+      const order = entry.order;
+      const date = (order.deliveredAt || "").slice(0, 10);
+      return `<div class="history-item">
+        <div>
+          <strong>${escapeHtml(formatDate(date))} — Spruce Order${order.deliveryNote ? ` · ${escapeHtml(order.deliveryNote)}` : ""}</strong>
+          ${(order.items || []).map(item => `<p>${escapeHtml(item.material)}: ${formatNumber(item.lf)} LF</p>`).join("")}
+        </div>
+        <button type="button" class="history-delete undo-spruce-delivery" data-spruce-order-id="${escapeHtml(order.id)}">Undo delivery</button>
+      </div>`;
+    }
+    const delivery = entry.delivery;
+    return `<div class="history-item">
       <div>
-        <strong>${escapeHtml(formatDate(delivery.date))}${delivery.note ? ` — ${escapeHtml(delivery.note)}` : ""}</strong>
-        ${delivery.items.map(item => `<p>${escapeHtml(item.material)}: ${formatNumber(item.lf)} LF</p>`).join("")}
+        <strong>${escapeHtml(formatDate(delivery.date))} — Legacy delivery${delivery.note ? ` · ${escapeHtml(delivery.note)}` : ""}</strong>
+        ${(delivery.items || []).map(item => `<p>${escapeHtml(item.material)}: ${formatNumber(item.lf)} LF</p>`).join("")}
       </div>
-      <button type="button" class="history-delete" data-delivery-id="${delivery.id}">Undo</button>
-    </div>`).join("")}`;
+      <button type="button" class="history-delete legacy-history-delete" data-delivery-id="${escapeHtml(delivery.id)}">Undo</button>
+    </div>`;
+  }).join("")}`;
 }
 
 function makeDeliveredAt(selectedDate) {
@@ -2702,69 +2966,163 @@ async function refreshActiveDelivery() {
   activeDelivery = project && level ? { project, level } : null;
 }
 
-async function saveDelivery() {
+function refreshDeliveryDialogViews() {
   if (!activeDelivery) return;
-  const date = $("deliveryDate").value;
-  if (!date) return alert("Choose an actual delivery date.");
+  $("deliveryTitle").textContent = `${projectTitle(activeDelivery.project)} — ${activeDelivery.level.name}`;
+  $("deliverySubtitle").textContent = deliverySubtitleText(activeDelivery.project, activeDelivery.level);
+  $("forecastDateEdit").value = activeDelivery.level.estimatedDeliveryDate || "";
+  renderDeliveryItems();
+  renderOpenSpruceOrders();
+  renderDeliveryHistory();
+}
 
-  // Re-read shared data immediately before validating the quantities. This reduces stale-entry conflicts.
+async function saveSpruceOrder() {
+  if (!activeDelivery) return;
+  const requestedByMaterial = new Map();
+  document.querySelectorAll(".delivery-input").forEach(input => {
+    const requested = Number(input.value || 0);
+    if (requested > EPSILON) requestedByMaterial.set(input.dataset.materialId, requested);
+  });
+  if (!requestedByMaterial.size) return alert("Enter at least one quantity to put in Spruce.");
+
   await refreshActiveDelivery();
   if (!activeDelivery) return alert("This level no longer exists in the shared data.");
 
   const items = [];
-  document.querySelectorAll(".delivery-input").forEach(input => {
-    const material = activeDelivery.level.materials.find(item => item.id === input.dataset.materialId);
-    if (!material) return;
-    const max = outstandingFor(activeDelivery.level, material);
-    const requested = Number(input.value || 0);
-    if (requested < -EPSILON || requested > max + EPSILON) throw new Error(`Delivery for ${material.material} must be between 0 and ${formatNumber(max)} LF. Another user may have recorded a delivery; review the refreshed remaining quantity.`);
+  for (const [materialId, requested] of requestedByMaterial.entries()) {
+    const material = activeDelivery.level.materials.find(item => item.id === materialId);
+    if (!material) throw new Error("A material changed while this Spruce order was being entered. Review the refreshed level and try again.");
+    const max = forecastRemainingFor(activeDelivery.level, material);
+    if (!Number.isFinite(requested) || requested < -EPSILON || requested > max + EPSILON) {
+      throw new Error(`Spruce quantity for ${material.material} must be between 0 and ${formatNumber(max)} LF. Shared data may have changed; review the refreshed forecast.`);
+    }
     if (requested > EPSILON) items.push({ material, lf: requested });
-  });
-  if (!items.length) return alert("Enter at least one delivery quantity.");
-
-  const deliveredAt = makeDeliveredAt(date);
-  const note = normalizeSpaces($("deliveryNote").value);
-  const rows = items.map(item => ({
-    id: uid(),
-    level_id: activeDelivery.level.id,
-    material_id: item.material.id,
-    delivered_lf: item.lf,
-    delivered_at: deliveredAt,
-    note: note || null
-  }));
-  await insertRows("deliveries", rows);
-  await recordActivity("level", activeDelivery.level.id, "record_delivery", { delivery_date: date, note, items: items.map(item => ({ material: item.material.material, lf: item.lf })) });
-  const projectId = activeDelivery.project.id;
-  const levelId = activeDelivery.level.id;
-  await syncFromCloud({ silent: true });
-  const project = state.projects.find(item => item.id === projectId);
-  const level = project?.levels.find(item => item.id === levelId);
-  activeDelivery = project && level ? { project, level } : null;
-  if (activeDelivery) {
-    renderDeliveryItems();
-    renderDeliveryHistory();
-    $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Estimated delivery ${formatDate(activeDelivery.level.estimatedDeliveryDate)}`;
   }
+  if (!items.length) return alert("Enter at least one quantity to put in Spruce.");
+
+  const orderId = uid();
+  const note = normalizeSpaces($("spruceOrderNote").value);
+  let headerInserted = false;
+  try {
+    await insertRows("spruce_orders", {
+      id: orderId,
+      level_id: activeDelivery.level.id,
+      entered_at: new Date().toISOString(),
+      note: note || null,
+      version: 1
+    });
+    headerInserted = true;
+    await insertRows("spruce_order_items", items.map(item => ({
+      id: uid(),
+      spruce_order_id: orderId,
+      material_id: item.material.id,
+      material_name: item.material.material,
+      quantity_lf: item.lf
+    })));
+  } catch (error) {
+    if (headerInserted) {
+      try { await deleteRows("spruce_orders", { id: `eq.${orderId}` }); } catch {}
+    }
+    throw error;
+  }
+
+  await recordActivity("level", activeDelivery.level.id, "put_in_spruce", {
+    note,
+    items: items.map(item => ({ material: item.material.material, lf: item.lf })),
+    total_lf: items.reduce((sum, item) => sum + item.lf, 0)
+  });
+  await refreshActiveDelivery();
+  if (activeDelivery) {
+    $("spruceOrderNote").value = "";
+    refreshDeliveryDialogViews();
+  }
+}
+
+async function deliverSpruceOrder(orderId) {
+  if (!activeDelivery) return;
+  const date = $("deliveryDate").value;
+  if (!date) return alert("Choose an actual delivery date.");
+  const note = normalizeSpaces($("deliveryNote").value);
+
+  await refreshActiveDelivery();
+  if (!activeDelivery) return alert("This level no longer exists in the shared data.");
+  const order = activeDelivery.level.spruceOrders.find(item => item.id === orderId && !item.deliveredAt);
+  if (!order) return alert("This Spruce order is no longer open. The shared data has been refreshed.");
+  const changed = await updateRows("spruce_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` }, {
+    delivered_at: makeDeliveredAt(date),
+    delivery_note: note || null,
+    updated_at: new Date().toISOString(),
+    version: order.version + 1
+  });
+  if (!changed?.length) throw new Error("This Spruce order changed before it could be delivered. Review the refreshed order and try again.");
+
+  await recordActivity("level", activeDelivery.level.id, "deliver_spruce_order", {
+    delivery_date: date,
+    note,
+    total_lf: spruceOrderTotal(order),
+    items: (order.items || []).map(item => ({ material: item.material, lf: item.lf }))
+  });
+  await refreshActiveDelivery();
+  if (activeDelivery) {
+    $("deliveryNote").value = "";
+    refreshDeliveryDialogViews();
+    setDeliveryActionMode("deliver");
+  }
+}
+
+async function removeSpruceOrder(orderId) {
+  if (!activeDelivery) return;
+  await refreshActiveDelivery();
+  if (!activeDelivery) return alert("This level no longer exists in the shared data.");
+  const order = activeDelivery.level.spruceOrders.find(item => item.id === orderId && !item.deliveredAt);
+  if (!order) return alert("This Spruce order is no longer open.");
+  if (!confirm("Remove this Spruce order?\n\nIts quantities will return to Forecast Remaining.")) return;
+  const deleted = await deleteRows("spruce_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` });
+  if (!deleted?.length) throw new Error("This Spruce order changed before it could be removed.");
+  await recordActivity("level", activeDelivery.level.id, "remove_from_spruce", {
+    total_lf: spruceOrderTotal(order),
+    items: (order.items || []).map(item => ({ material: item.material, lf: item.lf }))
+  });
+  await refreshActiveDelivery();
+  if (activeDelivery) {
+    refreshDeliveryDialogViews();
+    setDeliveryActionMode("deliver");
+  }
+}
+
+async function undoSpruceDelivery(orderId) {
+  if (!activeDelivery) return;
+  await refreshActiveDelivery();
+  if (!activeDelivery) return alert("This level no longer exists in the shared data.");
+  const order = activeDelivery.level.spruceOrders.find(item => item.id === orderId && item.deliveredAt);
+  if (!order) return alert("This delivered Spruce order could not be found.");
+  if (!confirm("Undo delivery for this Spruce order?\n\nThe entire order will move back to In Spruce.")) return;
+  const oldDate = (order.deliveredAt || "").slice(0, 10);
+  const changed = await updateRows("spruce_orders", { id: `eq.${order.id}`, version: `eq.${order.version}` }, {
+    delivered_at: null,
+    delivery_note: null,
+    updated_at: new Date().toISOString(),
+    version: order.version + 1
+  });
+  if (!changed?.length) throw new Error("This Spruce order changed before the delivery could be undone.");
+  await recordActivity("level", activeDelivery.level.id, "undo_spruce_delivery", {
+    delivery_date: oldDate,
+    total_lf: spruceOrderTotal(order)
+  });
+  await refreshActiveDelivery();
+  if (activeDelivery) refreshDeliveryDialogViews();
 }
 
 async function deleteDelivery(deliveryId) {
   if (!activeDelivery) return;
   const delivery = activeDelivery.level.deliveries.find(item => item.id === deliveryId);
   if (!delivery) return;
-  if (!confirm("Undo this delivery? The quantities will be added back to the shared outstanding forecast for everyone.")) return;
+  if (!confirm("Undo this legacy delivery? The quantities will return to the forecast.")) return;
   const ids = delivery.rowIds?.length ? delivery.rowIds : [delivery.id];
   await deleteRows("deliveries", { id: `in.(${ids.join(",")})` });
   await recordActivity("level", activeDelivery.level.id, "undo_delivery", { delivery_date: delivery.date, row_ids: ids });
-  const projectId = activeDelivery.project.id;
-  const levelId = activeDelivery.level.id;
-  await syncFromCloud({ silent: true });
-  const project = state.projects.find(item => item.id === projectId);
-  const level = project?.levels.find(item => item.id === levelId);
-  activeDelivery = project && level ? { project, level } : null;
-  if (activeDelivery) {
-    renderDeliveryItems();
-    renderDeliveryHistory();
-  }
+  await refreshActiveDelivery();
+  if (activeDelivery) refreshDeliveryDialogViews();
 }
 
 async function saveInventoryRow(row) {
@@ -2967,7 +3325,7 @@ function exportMatrixCsv() {
 }
 
 function exportForecastCsv() {
-  const levels = allLevels().filter(({ project, level }) => project.projectType !== "sfd" && level.estimatedDeliveryDate && levelStats(level).outstanding > EPSILON);
+  const levels = allLevels().filter(({ project, level }) => project.projectType !== "sfd" && level.estimatedDeliveryDate && levelStats(level).forecastRemaining > EPSILON);
   const months = [...new Set(levels.map(({ level }) => monthKey(level.estimatedDeliveryDate)))].sort();
   const materials = uniqueMaterials(levels);
   const rows = [["Material", ...months.map(monthLabel)]];
@@ -2978,7 +3336,7 @@ function exportForecastCsv() {
       for (const { level } of levels) {
         if (monthKey(level.estimatedDeliveryDate) !== month) continue;
         const material = level.materials.find(item => normalizeMaterialKey(item.material) === key);
-        if (material) total += outstandingFor(level, material);
+        if (material) total += forecastRemainingFor(level, material);
       }
       return total || "";
     })]);
@@ -3030,7 +3388,7 @@ function cleanBackupState() {
       levels: (project.levels || []).map(level => ({
         name: level.name,
         estimatedDeliveryDate: level.estimatedDeliveryDate,
-        workflowStatus: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+        workflowStatus: "forecast",
         materials: (level.materials || []).map(material => ({
           material: material.material,
           requiredLf: material.requiredLf,
@@ -3042,6 +3400,13 @@ function cleanBackupState() {
           date: delivery.date,
           note: delivery.note,
           items: (delivery.items || []).map(item => ({ material: item.material, lf: item.lf }))
+        })),
+        spruceOrders: (level.spruceOrders || []).map(order => ({
+          enteredAt: order.enteredAt || "",
+          note: order.note || "",
+          deliveredAt: order.deliveredAt || "",
+          deliveryNote: order.deliveryNote || "",
+          items: (order.items || []).map(item => ({ material: item.material, lf: item.lf }))
         }))
       }))
     })),
@@ -3079,7 +3444,7 @@ function normalizeBackup(parsed) {
         id: uid(),
         name: normalizeSpaces(level.name || `Level ${index + 1}`),
         estimatedDeliveryDate: level.estimatedDeliveryDate || "",
-        workflowStatus: level.workflowStatus === "spruce" ? "spruce" : "forecast",
+        workflowStatus: "forecast",
         materials: (level.materials || []).map(material => ({
           id: uid(),
           material: normalizeSpaces(material.material || ""),
@@ -3093,7 +3458,15 @@ function normalizeBackup(parsed) {
           date: delivery.date || "",
           note: normalizeSpaces(delivery.note || ""),
           items: (delivery.items || []).map(item => ({ material: normalizeSpaces(item.material || ""), lf: Number(item.lf || 0) }))
-        }))
+        })),
+        spruceOrders: Array.isArray(level.spruceOrders) ? level.spruceOrders.map(order => ({
+          id: uid(),
+          enteredAt: order.enteredAt || "",
+          note: normalizeSpaces(order.note || ""),
+          deliveredAt: order.deliveredAt || "",
+          deliveryNote: normalizeSpaces(order.deliveryNote || ""),
+          items: (order.items || []).map(item => ({ material: normalizeSpaces(item.material || ""), lf: Number(item.lf || 0) }))
+        })).filter(order => order.items.some(item => item.material && item.lf > EPSILON)) : []
       }))
     })),
     inventoryMaterials: Array.isArray(parsed.inventoryMaterials) ? parsed.inventoryMaterials.map(item => ({
@@ -3204,35 +3577,21 @@ async function deleteActiveProject() {
 async function updateForecastDate() {
   if (!activeDelivery) return;
   const nextDate = $("forecastDateEdit").value;
-  const nextStatus = $("workflowStatusEdit").value === "spruce" ? "spruce" : "forecast";
   const { project, level } = activeDelivery;
   if (project.projectType !== "sfd" && !nextDate) return alert("Choose an estimated delivery date for a Multi-family package.");
   try {
     const result = await updateRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` }, {
       estimated_delivery_date: nextDate || null,
-      workflow_status: nextStatus,
       updated_at: new Date().toISOString(),
       version: level.version + 1
     });
     if (!result?.length) throw new Error("This level was changed by another user. The shared data will be refreshed before you try again.");
-    await recordActivity("level", level.id, "update_level_planning", {
+    await recordActivity("level", level.id, "update_forecast_date", {
       from_date: level.estimatedDeliveryDate || "",
-      to_date: nextDate || "",
-      from_status: level.workflowStatus || "forecast",
-      to_status: nextStatus
+      to_date: nextDate || ""
     });
-    const projectId = project.id;
-    const levelId = level.id;
-    await syncFromCloud({ silent: true });
-    const freshProject = state.projects.find(item => item.id === projectId);
-    const freshLevel = freshProject?.levels.find(item => item.id === levelId);
-    activeDelivery = freshProject && freshLevel ? { project: freshProject, level: freshLevel } : null;
-    if (activeDelivery) {
-      $("deliverySubtitle").textContent = `${activeDelivery.project.projectNumber}${activeDelivery.project.revision ? ` · ${activeDelivery.project.revision}` : ""} · ${activeDelivery.project.customer ? `Customer: ${activeDelivery.project.customer} · ` : ""}${activeDelivery.project.sales ? `Sales: ${activeDelivery.project.sales} · ` : ""}Estimated delivery ${formatDate(nextDate)} · ${planningStatusLabel(planningStatus(activeDelivery.level))}`;
-      $("workflowStatusEdit").value = activeDelivery.level.workflowStatus === "spruce" ? "spruce" : "forecast";
-      renderDeliveryItems();
-      renderDeliveryHistory();
-    }
+    await refreshActiveDelivery();
+    if (activeDelivery) refreshDeliveryDialogViews();
   } catch (error) {
     console.error(error);
     alert(error.message);
@@ -3242,7 +3601,7 @@ async function updateForecastDate() {
 async function removeActiveLevel() {
   if (!activeDelivery) return;
   const { project, level } = activeDelivery;
-  if (!confirm(`Remove ${project.projectNumber} — ${level.name} from the shared project?\n\nUse delivery transactions instead when material has actually shipped. This is intended for a cancelled or wrongly imported level.`)) return;
+  if (!confirm(`Remove ${project.projectNumber} — ${level.name} from the shared project?\n\nUse the Spruce / delivery workflow when material is committed or shipped. Removing a level is intended only for a cancelled or wrongly imported level.`)) return;
   try {
     const deleted = await deleteRows("levels", { id: `eq.${level.id}`, version: `eq.${level.version}` });
     if (!deleted?.length) throw new Error("This level was changed by another user before it could be removed.");
@@ -3561,6 +3920,8 @@ function wireEvents() {
   });
 
   $("updateForecastDate").addEventListener("click", updateForecastDate);
+  $("spruceModeEntry").addEventListener("click", () => setDeliveryActionMode("spruce"));
+  $("spruceModeDelivery").addEventListener("click", () => setDeliveryActionMode("deliver"));
   $("deliveryMaterialSearch").addEventListener("input", applyDeliveryMaterialFilter);
   $("clearDeliveryMaterialSearch").addEventListener("click", () => {
     $("deliveryMaterialSearch").value = "";
@@ -3575,23 +3936,61 @@ function wireEvents() {
     if (!activeDelivery) return;
     document.querySelectorAll(".delivery-input").forEach(input => {
       const material = activeDelivery.level.materials.find(item => item.id === input.dataset.materialId);
-      if (material) input.value = outstandingFor(activeDelivery.level, material);
+      if (material) input.value = forecastRemainingFor(activeDelivery.level, material);
     });
   });
   $("clearDeliveryInputs").addEventListener("click", () => document.querySelectorAll(".delivery-input").forEach(input => { input.value = 0; }));
-  $("saveDelivery").addEventListener("click", async () => {
-    const button = $("saveDelivery");
+  $("saveSpruceOrder").addEventListener("click", async () => {
+    const button = $("saveSpruceOrder");
     button.disabled = true;
     button.textContent = "Saving…";
-    try { await saveDelivery(); }
-    catch (error) { console.error(error); alert(error.message); }
-    finally { button.disabled = false; button.textContent = "Record Delivery"; }
+    try { await saveSpruceOrder(); }
+    catch (error) {
+      console.error(error);
+      alert(error.message);
+      await syncFromCloud({ silent: true, rebindActive: true });
+      if (activeDelivery) refreshDeliveryDialogViews();
+    }
+    finally { button.disabled = false; button.textContent = "Put in Spruce"; }
+  });
+  $("openSpruceOrders").addEventListener("click", async event => {
+    const deliverButton = event.target.closest(".deliver-spruce-order");
+    const removeButton = event.target.closest(".remove-spruce-order");
+    const button = deliverButton || removeButton;
+    if (!button) return;
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = deliverButton ? "Delivering…" : "Removing…";
+    try {
+      if (deliverButton) await deliverSpruceOrder(deliverButton.dataset.spruceOrderId);
+      else await removeSpruceOrder(removeButton.dataset.spruceOrderId);
+    } catch (error) {
+      console.error(error);
+      alert(error.message);
+      await syncFromCloud({ silent: true, rebindActive: true });
+      if (activeDelivery) refreshDeliveryDialogViews();
+    } finally {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   });
   $("deliveryHistory").addEventListener("click", async event => {
-    const button = event.target.closest(".history-delete");
+    const spruceButton = event.target.closest(".undo-spruce-delivery");
+    const legacyButton = event.target.closest(".legacy-history-delete");
+    const button = spruceButton || legacyButton;
     if (!button) return;
-    try { await deleteDelivery(button.dataset.deliveryId); }
-    catch (error) { console.error(error); alert(error.message); }
+    button.disabled = true;
+    try {
+      if (spruceButton) await undoSpruceDelivery(spruceButton.dataset.spruceOrderId);
+      else await deleteDelivery(legacyButton.dataset.deliveryId);
+    } catch (error) {
+      console.error(error);
+      alert(error.message);
+      await syncFromCloud({ silent: true, rebindActive: true });
+      if (activeDelivery) refreshDeliveryDialogViews();
+    } finally {
+      button.disabled = false;
+    }
   });
   $("removeLevel").addEventListener("click", removeActiveLevel);
   $("saveMaterialExclusion").addEventListener("click", async () => {
