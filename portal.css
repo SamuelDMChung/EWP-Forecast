@@ -33,3 +33,18 @@ main{padding:9px 0 54px}
 footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--border);padding:20px 0 24px;color:#7c8a9c;font-size:11px;margin-top:auto}
 @media(max-width:740px){.masthead{padding-top:22px}.intro{margin-top:44px}.workspace-grid{grid-template-columns:1fr}.workspace-card{min-height:292px;padding:25px}.page{width:calc(100% - 32px)}main{padding-bottom:35px}}
 @media(prefers-reduced-motion:reduce){.workspace-card{transition:none}}
+
+/* Phase 3: first-class shared authentication. Hidden state is native [hidden]. */
+[hidden] { display: none !important; }
+.portal-auth-loading{margin:32px 0;padding:22px;border:1px solid var(--border);border-radius:14px;background:#fff;color:var(--muted)}
+.portal-login{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(280px,.9fr);align-items:center;gap:36px;margin:16px 0 50px;padding:32px;border:1px solid var(--border);border-radius:20px;background:#fff;box-shadow:0 13px 35px rgba(18,47,75,.045)}
+.portal-login h2{font-size:clamp(24px,2.6vw,36px);letter-spacing:-.035em;line-height:1.15;margin:9px 0 12px}.portal-login p{color:var(--muted)}
+.portal-login-form{display:grid;gap:9px}.portal-login-form label{font-weight:750;font-size:12px}
+.portal-login-form input{padding:11px;border-radius:9px;border:1px solid #b9c9dc;width:100%;font:inherit;margin-bottom:8px}
+.portal-login-form input:focus{outline:3px solid #d8e8ff;border-color:#3979c8}
+.portal-primary-button{border:0;border-radius:10px;padding:13px 17px;background:#2159aa;color:#fff;font:inherit;font-weight:850;cursor:pointer}
+.portal-primary-button:disabled{opacity:.65;cursor:wait}
+.portal-login-error{color:#b42318 !important;font-weight:750;margin:0 0 6px}
+.portal-signed-in{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin:0 0 23px;padding:10px 14px;border:1px solid #cfdfed;background:#fff;border-radius:10px;font-size:12px;color:#52687c}
+.portal-signed-in strong{color:#183653}.portal-signed-in button{background:none;border:1px solid #bdcce0;border-radius:7px;padding:6px 11px;color:#254e84;font:inherit;font-weight:750;cursor:pointer}
+@media(max-width:740px){.portal-login{grid-template-columns:1fr;padding:20px;gap:15px}}

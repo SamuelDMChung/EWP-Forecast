@@ -1483,3 +1483,14 @@ select { font: inherit; }
   .spruce-mode-row { align-items: stretch; flex-direction: column; gap: 9px; }
   .spruce-mode-row .spruce-mode-switch { width: 100%; }
 }
+
+/* Phase 2.1: shared Project # registry match and owner-of-record notice. */
+.shared-project-lookup { grid-column: 1 / -1; margin: -4px 0 6px; font-weight: 650; }
+.shared-project-lookup:empty { display: none; }
+.shared-project-lookup[data-state="success"] { color: var(--success); }
+.shared-project-lookup[data-state="error"] { color: var(--danger); }
+input[readonly], textarea[readonly], select:disabled { background: #f5f7fa; color: #475467; }
+
+/* Phase 3: direct project-number navigation to Tracking. */
+.project-col .tracker-project-link{display:inline-flex;align-items:center;text-decoration:none;color:#2159a5;background:#eaf2ff;border-color:#c6d8f0;cursor:pointer}
+.project-col .tracker-project-link:hover{background:#dceafe}

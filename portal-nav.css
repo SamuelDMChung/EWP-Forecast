@@ -59,3 +59,6 @@
   .ewp-portal-nav__brand { font-size: 12px; }
   .ewp-portal-nav__link { font-size: 11px; padding: 7px 8px; }
 }
+
+.ewp-portal-nav__account{font-size:11px;color:#eaf2ff;overflow-wrap:anywhere;max-width:220px;opacity:.9}
+@media(max-width:740px){.ewp-portal-nav__account{font-size:10px;max-width:100%}}

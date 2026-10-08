@@ -901,3 +901,9 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .tracker-login-card label { display:grid;gap:5px;font-size:13px;font-weight:600; }
 .tracker-login-card input { width:100%;padding:10px;border:1px solid #ccd4e0;border-radius:8px; }
 .tracker-login-card button { padding:12px; }
+
+/* Phase 3 cross-app links: independent from edit/drag card interaction. */
+.forecast-project-link{display:inline-flex;margin-top:12px;padding:6px 9px;border-radius:7px;text-decoration:none;background:#e9f2ff;color:#174c98;font-weight:800;font-size:11px;align-self:flex-start}
+.forecast-project-link:hover,.forecast-project-link:focus-visible{background:#d5e5ff;color:#113f80}
+.tracker-forecast-inline{color:#1b5eac;font-weight:800;text-decoration:none;font-size:13px;padding:5px}
+.tracker-forecast-inline:hover{text-decoration:underline}

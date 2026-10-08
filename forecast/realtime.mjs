@@ -1,5 +1,5 @@
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.mjs";
-import { getAccessToken } from "./auth.mjs";
+import { getAccessToken } from "./auth.mjs?v=1.0-p3";
 
 let client = null;
 let channel = null;

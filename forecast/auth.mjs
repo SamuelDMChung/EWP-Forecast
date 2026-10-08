@@ -4,8 +4,10 @@ const AUTH_BASE = `${SUPABASE_URL.replace(/\/$/, "")}/auth/v1`;
 const SESSION_KEY = "ewp_forecast_supabase_session_v08";
 const LAST_EMAIL_KEY = "ewp_forecast_last_email_v08";
 const REFRESH_MARGIN_SECONDS = 60;
+export const EWP_AUTH_STORAGE_KEY = SESSION_KEY;
 
 let session = null;
+let refreshInFlight = null;
 
 function nowSeconds() {
   return Math.floor(Date.now() / 1000);
@@ -90,21 +92,44 @@ export async function signInWithPassword(email, password) {
   return session;
 }
 
-export async function refreshSession() {
-  const current = session || loadStoredSession();
-  if (!current?.refresh_token) {
-    saveSession(null);
-    return null;
+async function refreshOnce() {
+  // Read the latest persisted token: a sibling portal/tool tab may have rotated it.
+  const newest = loadStoredSession();
+  if (newest && newest.expires_at > nowSeconds() + REFRESH_MARGIN_SECONDS) {
+    session = newest;
+    return session;
   }
+  const current = newest || session;
+  if (!current?.refresh_token) return saveSession(null);
   try {
     const data = await authRequest("/token?grant_type=refresh_token", {
       body: { refresh_token: current.refresh_token }
     });
     return saveSession(data);
   } catch (error) {
+    // A competing tab may have completed its refresh during our request.
+    const replacement = loadStoredSession();
+    if (replacement && replacement.refresh_token !== current.refresh_token &&
+        replacement.expires_at > nowSeconds() + REFRESH_MARGIN_SECONDS) {
+      session = replacement;
+      return session;
+    }
     saveSession(null);
     throw error;
   }
+}
+
+export async function refreshSession() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    // Lock across same-origin tabs where supported; keep no-lock fallback for other browsers.
+    if (typeof navigator !== "undefined" && navigator.locks?.request) {
+      return navigator.locks.request("ewp-management-supabase-refresh", refreshOnce);
+    }
+    return refreshOnce();
+  })();
+  try { return await refreshInFlight; }
+  finally { refreshInFlight = null; }
 }
 
 export async function restoreSession() {
@@ -118,6 +143,10 @@ export async function restoreSession() {
 }
 
 export async function getAccessToken() {
+  // Avoid using a stale token when another tab refreshed or signed out.
+  const newest = loadStoredSession();
+  if (!newest) session = null;
+  else if (!session || newest.refresh_token !== session.refresh_token) session = newest;
   if (!session) await restoreSession();
   if (!session) return "";
   if (Number(session.expires_at || 0) <= nowSeconds() + REFRESH_MARGIN_SECONDS) {
@@ -133,4 +162,12 @@ export async function signOut() {
     catch (error) { console.warn("Supabase sign-out request failed; clearing local session anyway", error); }
   }
   saveSession(null);
+}
+
+// Shared across the Portal, Tracker, and Forecast on the same GitHub Pages origin.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", event => {
+    if (event.key !== SESSION_KEY) return;
+    session = loadStoredSession();
+  });
 }

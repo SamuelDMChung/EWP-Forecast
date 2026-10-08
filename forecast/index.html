@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="light" />
   <title>EWP Material Forecast</title>
-  <link rel="stylesheet" href="styles.css?v=0.27" />
-  <link rel="stylesheet" href="../portal-nav.css?v=1.0-p1" />
+  <link rel="stylesheet" href="styles.css?v=1.0-p3" />
+  <link rel="stylesheet" href="../portal-nav.css?v=1.0-p3" />
 </head>
 <body>
   <nav class="ewp-portal-nav" aria-label="EWP Management Portal navigation">
@@ -16,6 +16,7 @@
       <a class="ewp-portal-nav__link" href="../tracker/">Project Tracking</a>
       <a class="ewp-portal-nav__link" href="../forecast/" aria-current="page">EWP Forecast</a>
     </div>
+    <span class="ewp-portal-nav__account" id="ewpNavAccount" aria-live="polite"></span>
   </nav>
 
   <header class="app-header">
@@ -71,6 +72,7 @@
           <h2>Project Defaults</h2>
           <div class="form-grid">
             <label>Project #<input id="projectNumber" autocomplete="off" placeholder="e.g. TC26238" /></label>
+            <p id="projectLookupStatus" class="small-note shared-project-lookup" aria-live="polite"></p>
             <label>Revision<input id="revision" autocomplete="off" placeholder="e.g. R1" /></label>
             <label>Customer<input id="customer" autocomplete="off" placeholder="Customer" /></label>
             <label>Sales<input id="sales" autocomplete="off" placeholder="Salesperson" /></label>
@@ -512,6 +514,7 @@
         <button value="cancel" class="icon-button" aria-label="Close">×</button>
       </div>
 
+      <p id="editProjectTrackerInfo" class="small-note shared-project-lookup hidden">Customer, Sales, Project #, Address and Type are managed in Project Tracking. Forecast can still edit Revision and estimated delivery dates.</p>
       <div class="form-grid">
         <label>Project #<input id="editProjectNumber" autocomplete="off" /></label>
         <label>Revision<input id="editRevision" autocomplete="off" /></label>
@@ -598,6 +601,7 @@
     </div>
   </div>
 
-  <script type="module" src="app.mjs?v=1.0-p2"></script>
+  <script type="module" src="app.mjs?v=1.0-p3"></script>
+  <script type="module" src="../workspace-auth.mjs?v=1.0-p3"></script>
 </body>
 </html>

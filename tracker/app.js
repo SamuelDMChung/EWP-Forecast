@@ -1,5 +1,6 @@
-import { restoreSession, signInWithPassword, signOut, getCurrentSession } from '../forecast/auth.mjs';
-import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTrackerProject, getNextTrackerNumber, saveTrackerSettings, addTrackerFilter, removeTrackerFilter } from './cloud.mjs';
+import { restoreSession, signInWithPassword, signOut, getCurrentSession, EWP_AUTH_STORAGE_KEY } from '../forecast/auth.mjs?v=1.0-p3';
+import { startTrackerRealtime, stopTrackerRealtime } from './realtime.mjs?v=1.0-p3';
+import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTrackerProject, getNextTrackerNumber, saveTrackerSettings, addTrackerFilter, removeTrackerFilter } from './cloud.mjs?v=1.0-p3';
 
 (() => {
   const PROJECTS_KEY = 'tc_project_tracker_v01_projects'; // legacy browser data; never used as authoritative data
@@ -8,6 +9,11 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
   const ISSUED_COUNTER_KEY = 'ewp_project_tracker_v03_issued_counters';
   const SAVED_FILTERS_KEY = 'ewp_project_tracker_v04_saved_filters';
 
+  const PROJECT_SYNC_SIGNAL = 'ewp_shared_projects_changed';
+  function announceProjectChange() {
+    // Inform another open portal tab immediately. Supabase remains authoritative.
+    try { localStorage.setItem(PROJECT_SYNC_SIGNAL, String(Date.now())); } catch {}
+  }
   const defaultSettings = { sales: [], assignees: [], tasks: [] };
   let projects = [];
   let settings = { ...defaultSettings };
@@ -605,6 +611,11 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
     card.dataset.projectId = project.id;
     card.dataset.workItemId = workItem.id;
     card.querySelector('.project-number').textContent = project.projectNumber || '—';
+    const forecastLink = card.querySelector('.forecast-project-link');
+    forecastLink.href = `../forecast/?project=${encodeURIComponent(project.projectNumber || '')}`;
+    forecastLink.title = `Open ${project.projectNumber} in EWP Forecast`;
+    forecastLink.addEventListener('click', event => event.stopPropagation());
+    forecastLink.addEventListener('dragstart', event => event.stopPropagation());
     card.querySelector('.project-address').textContent = project.address || 'No address';
     card.querySelector('.project-task').textContent = workItem.task || 'No task';
     card.querySelector('.customer-name').textContent = project.customer || '—';
@@ -689,7 +700,16 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
       cells.forEach((value, index) => {
         const td = document.createElement('td');
         td.textContent = value;
-        if (index === 0) td.className = 'table-project-number';
+        if (index === 0) {
+          td.className = 'table-project-number';
+          const link = document.createElement('a');
+          link.href = `../forecast/?project=${encodeURIComponent(project.projectNumber || '')}`;
+          link.className = 'tracker-forecast-inline';
+          link.title = `Open ${project.projectNumber} in EWP Forecast`;
+          link.textContent = ' ↗';
+          link.addEventListener('click', event => event.stopPropagation());
+          td.appendChild(link);
+        }
         if (index === 3) td.classList.add('table-status');
         if ((index === 11 || index === 12) && isWorkItemOverdue(project, workItem)) td.classList.add('overdue');
         row.appendChild(td);
@@ -1220,6 +1240,7 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
       };
       const created=await saveTrackerProject(payload,workItems.map(item=>({...item,id:item.id||crypto.randomUUID(),createdAt:now})),null);
       await syncCloud(`Project ${created?.project_number || projectNumber} created in Supabase`);
+      announceProjectChange();
       prepareNewProjectForm(true);
       switchView('board');
     });
@@ -1272,6 +1293,7 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
       await saveTrackerProject(payload,workItems.map(item=>({...item,id:item.id||crypto.randomUUID()})),project.version);
       closeEditProject();
       await syncCloud('Project changes saved');
+      announceProjectChange();
     });
   });
 
@@ -1286,6 +1308,7 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
       await deleteTrackerProject(project.id,project.version);
       closeEditProject();
       await syncCloud('Project removed');
+      announceProjectChange();
     });
   });
 
@@ -1435,27 +1458,47 @@ import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTracke
   });
   document.getElementById('trackerSignOut').addEventListener('click',async()=>{
     if (!confirm('Sign out of the EWP Management session?')) return;
+    await stopTrackerRealtime();
     await signOut();
     projects=[];settings={...defaultSettings};savedFilters=[];
     setCloudReady(false);
-    document.getElementById('trackerLogin').classList.remove('hidden');
-    cloudMessage('Sign in required');
+    window.location.assign('../');
   });
   document.getElementById('trackerReload').addEventListener('click',()=>{
-    withCloud(()=>syncCloud('Shared data refreshed'));
+    syncCloud('Shared data refreshed').catch(error => cloudMessage(error.message,true));
   });
-  window.addEventListener('focus',()=>{
-    if (cloudReady && document.visibilityState==='visible') syncCloud('Shared data refreshed').catch(()=>{});
+  let trackerRefreshTimer = null;
+  function scheduleTrackerRefresh() {
+    if (!cloudReady || document.visibilityState !== 'visible' || document.querySelector('dialog[open]')) return;
+    if (trackerRefreshTimer) clearTimeout(trackerRefreshTimer);
+    trackerRefreshTimer=setTimeout(() => {
+      trackerRefreshTimer=null;
+      if (!syncing && !document.querySelector('dialog[open]')) syncCloud('Shared projects updated').catch(()=>{});
+    }, 350);
+  }
+  window.addEventListener('focus', scheduleTrackerRefresh);
+  document.addEventListener('visibilitychange', scheduleTrackerRefresh);
+  window.addEventListener('storage', event => {
+    if (event.key === PROJECT_SYNC_SIGNAL) scheduleTrackerRefresh();
   });
+  // Other employees may update projects while this workspace remains open.
+  window.setInterval(scheduleTrackerRefresh, 60000);
+  // A ?project= link from Forecast opens Tracking filtered to the same Project #.
+  const linkedProject = new URLSearchParams(window.location.search).get('project');
+  if (linkedProject) {
+    document.getElementById('projectSearch').value = linkedProject.trim().slice(0, 80);
+  }
   (async()=>{
     try {
       const session=await restoreSession();
-      if (!session?.user) { document.getElementById('trackerLogin').classList.remove('hidden');cloudMessage('Sign in required');return; }
+      if (!session?.user) { window.location.replace('../?next=tracker%2F'); return; }
       await syncCloud('Connected to shared Supabase');
       prepareNewProjectForm(true);
+      startTrackerRealtime(scheduleTrackerRefresh, () => {}).catch(error => console.warn('Tracker live sync unavailable',error));
     } catch(error) {
-      document.getElementById('trackerLogin').classList.remove('hidden');
-      document.getElementById('trackerLoginError').textContent=error.message;
+      // A transient cloud failure is not necessarily a sign-out; keep the page for retry.
+      cloudMessage(`Could not load shared data: ${error.message}`,true);
+      document.getElementById('trackerReload').disabled=false;
     }
   })();
 })();

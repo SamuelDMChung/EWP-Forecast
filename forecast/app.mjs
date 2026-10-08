@@ -1,9 +1,9 @@
 import { extractPdfLines, parseMaterialReportLines, normalizeSpaces } from "./parser.mjs";
 import { parsePurchaseWorkbook, normalizePoMaterialDescription } from "./purchase_parser.mjs";
 import { parseDeliveryMaterialReportLines } from "./delivery_parser.mjs";
-import { loadCloudRows, loadActivityRows, insertRows, updateRows, deleteRows, logActivity, rpc } from "./db.mjs";
-import { restoreSession, signInWithPassword, signOut, getCurrentUser, getLastEmail } from "./auth.mjs";
-import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs";
+import { loadCloudRows, loadActivityRows, findSharedProjectByNumber, insertRows, updateRows, deleteRows, logActivity, rpc } from "./db.mjs?v=1.0-p3";
+import { restoreSession, signInWithPassword, signOut, getCurrentUser, getLastEmail } from "./auth.mjs?v=1.0-p3";
+import { startRealtime, stopRealtime, refreshRealtimeAuth } from "./realtime.mjs?v=1.0-p3";
 
 const LEGACY_STORAGE_KEY = "ewp_forecast_v2";
 const UI_PREFS_KEY = "ewp_forecast_v06_ui";
@@ -35,6 +35,9 @@ let historyHasMore = false;
 let realtimeRefreshTimer = null;
 let historyRefreshTimer = null;
 let realtimeState = "starting";
+let projectLookupTimer = null;
+let projectLookupSerial = 0;
+let lastAutoMatchedProject = null;
 
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID();
@@ -128,7 +131,8 @@ async function ensureAuthenticated() {
     setAuthGateVisible(false);
     return restored;
   }
-  return openLoginDialog();
+  window.location.replace("../?next=forecast%2F");
+  return new Promise(() => {}); // Page navigates to the shared portal login.
 }
 
 function loadUiPrefs() {
@@ -244,6 +248,7 @@ function mapCloudRows(rows) {
       createdAt: row.created_at || "",
       updatedAt: row.updated_at || "",
       version: Number(row.version || 1),
+      trackerManaged: row.tracker_phase !== null && row.tracker_phase !== undefined,
       levels: []
     });
   }
@@ -846,6 +851,125 @@ function progressHtml(percent, label) {
     <div class="progress-track" aria-label="${formatPercent(safe)} ${escapeHtml(label)}"><span style="width:${safe}%"></span></div>`;
 }
 
+function sharedProjectNumber(value) {
+  return normalizeSpaces(value || "").toUpperCase();
+}
+
+function isTrackerManaged(project) {
+  return Boolean(project?.trackerManaged || (project && project.tracker_phase !== null && project.tracker_phase !== undefined));
+}
+
+function setProjectLookupStatus(text, kind = "muted") {
+  const el = $("projectLookupStatus");
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.state = kind;
+}
+
+function setTrackerOwnedIntakeFields(managed) {
+  for (const id of ["customer", "sales", "address"]) {
+    $(id).readOnly = Boolean(managed);
+    $(id).title = managed ? "Shared project details are managed in Project Tracking." : "";
+  }
+  $("projectType").disabled = Boolean(managed);
+  $("projectType").title = managed ? "The project type is managed in Project Tracking." : "";
+}
+
+// Shared customer/sales/address are authoritative in Tracking once someone
+// manages that record there. Revision, dates, levels and materials belong to Forecast.
+function applyMatchedProjectToIntake(project, { trackerOnly = false } = {}) {
+  if (!project) return false;
+  const managed = isTrackerManaged(project);
+  if (trackerOnly && !managed) return false;
+  const fromRow = key => String(project[key] ?? "");
+  let changed = false;
+  const fields = [
+    ["customer", "customer"], ["sales", "sales"],
+    ["address", project.address_project_name !== undefined ? "address_project_name" : "address"]
+  ];
+  for (const [id, key] of fields) {
+    const value = fromRow(key);
+    const input = $(id);
+    if (managed || (!input.value.trim() && value.trim())) {
+      if (input.value !== value) changed = true;
+      input.value = value;
+    }
+  }
+  const typeFromTracker = project.tracker_project_type;
+  const mappedType = typeFromTracker === "SFD" ? "sfd" : typeFromTracker === "Multi" ? "multi" : (project.project_type || project.projectType);
+  if (mappedType === "sfd" || mappedType === "multi") {
+    if (managed || !$("projectType").value) {
+      if ($("projectType").value !== mappedType) changed = true;
+      $("projectType").value = mappedType;
+    }
+  }
+  if (!$("revision").value && (project.revision || "")) $("revision").value = project.revision;
+  setTrackerOwnedIntakeFields(managed);
+  lastAutoMatchedProject = {
+    number: sharedProjectNumber(project.project_number || project.projectNumber),
+    values: Object.fromEntries(["customer", "sales", "address"].map(id => [id, $(id).value]))
+  };
+  setProjectLookupStatus(
+    managed
+      ? `Project ${sharedProjectNumber(project.project_number || project.projectNumber)} matched in Project Tracking. Customer, Sales, Address and Type use Tracker values.`
+      : `Existing project ${sharedProjectNumber(project.project_number || project.projectNumber)} found in EWP Forecast.`,
+    "success"
+  );
+  if (draft) {
+    syncDraftFromInputs();
+    updateProjectTypeUi();
+  }
+  return changed;
+}
+
+async function resolveIntakeSharedProject(number, { showUnmatched = true } = {}) {
+  const normalized = sharedProjectNumber(number);
+  if (!normalized) return null;
+  const row = await findSharedProjectByNumber(normalized);
+  if (row) applyMatchedProjectToIntake(row);
+  else if (showUnmatched) {
+    setTrackerOwnedIntakeFields(false);
+    setProjectLookupStatus(`Project ${normalized} has not been registered yet. A new shared record will be created on import.`, "muted");
+  }
+  return row;
+}
+
+function queueProjectNumberLookup() {
+  if (projectLookupTimer) clearTimeout(projectLookupTimer);
+  const serial = ++projectLookupSerial;
+  const number = sharedProjectNumber($("projectNumber").value);
+  if (lastAutoMatchedProject && lastAutoMatchedProject.number !== number) {
+    for (const id of ["customer", "sales", "address"]) {
+      if ($(id).value === lastAutoMatchedProject.values[id]) $(id).value = "";
+    }
+    lastAutoMatchedProject = null;
+    if (draft) syncDraftFromInputs();
+  }
+  setTrackerOwnedIntakeFields(false);
+  if (!number) {
+    setProjectLookupStatus("");
+    return;
+  }
+  if (number.length < 5) {
+    setProjectLookupStatus("Enter the full Project # to find a matching project.");
+    return;
+  }
+  setProjectLookupStatus("Looking up project number…");
+  projectLookupTimer = setTimeout(async () => {
+    try {
+      const row = await findSharedProjectByNumber(number);
+      if (serial !== projectLookupSerial || number !== sharedProjectNumber($("projectNumber").value)) return;
+      if (row) applyMatchedProjectToIntake(row);
+      else {
+        setTrackerOwnedIntakeFields(false);
+        setProjectLookupStatus("No existing project found. Importing a PDF will create this project.");
+      }
+    } catch (error) {
+      if (serial === projectLookupSerial) setProjectLookupStatus(`Project lookup failed: ${error.message}`, "error");
+    }
+  }, 350);
+}
+
 async function handlePdf(file) {
   const status = $("parseStatus");
   status.className = "status muted";
@@ -858,15 +982,17 @@ async function handlePdf(file) {
 
     // Phase 2: a PDF may belong to a project already entered in Project Tracking.
     // Prefill shared fields rather than making staff re-enter Sales and Customer.
-    const registered = state.projects.find(item => item.projectNumber.toLowerCase() === String(parsed.projectNumber || "").trim().toLowerCase());
+    // Read the current Supabase record, not an old Forecast snapshot.
+    const registered = parsed.projectNumber ? await findSharedProjectByNumber(parsed.projectNumber) : null;
+    lastAutoMatchedProject = null;
     draft = {
       sourceFileName: file.name,
       projectNumber: parsed.projectNumber || "",
       revision: parsed.revision || "",
       customer: registered?.customer || "",
       sales: registered?.sales || "",
-      projectType: registered?.projectType || ($("projectType")?.value === "sfd" ? "sfd" : "multi"),
-      address: parsed.address || registered?.address || "",
+      projectType: registered?.tracker_project_type === "SFD" ? "sfd" : registered?.tracker_project_type === "Multi" ? "multi" : (registered?.project_type || ($("projectType")?.value === "sfd" ? "sfd" : "multi")),
+      address: isTrackerManaged(registered) ? (registered.address_project_name || "") : (parsed.address || registered?.address_project_name || ""),
       defaultEstimatedDeliveryDate: $("projectDate").value || "",
       levels: parsed.levels.map(level => ({
         id: uid(),
@@ -886,6 +1012,13 @@ async function handlePdf(file) {
     $("sales").value = draft.sales;
     $("projectType").value = draft.projectType || "multi";
     $("address").value = draft.address;
+    ++projectLookupSerial;
+    if (projectLookupTimer) clearTimeout(projectLookupTimer);
+    if (registered) applyMatchedProjectToIntake(registered);
+    else {
+      setTrackerOwnedIntakeFields(false);
+      setProjectLookupStatus(draft.projectNumber ? `Project ${sharedProjectNumber(draft.projectNumber)} is new to the shared registry.` : "");
+    }
     updateProjectTypeUi();
     $("reviewCard").classList.remove("hidden");
     const filteredCount = draft.levels.reduce((n, level) => n + (level.filteredMaterials || []).length, 0);
@@ -1029,6 +1162,11 @@ function syncDraftFromInputs() {
 
 function resetIntake() {
   draft = null;
+  lastAutoMatchedProject = null;
+  ++projectLookupSerial;
+  if (projectLookupTimer) clearTimeout(projectLookupTimer);
+  setTrackerOwnedIntakeFields(false);
+  setProjectLookupStatus("");
   $("pdfFile").value = "";
   $("projectNumber").value = "";
   $("revision").value = "";
@@ -1326,7 +1464,17 @@ function projectReviewSummaryHtml() {
       </div>` : ""}`;
 }
 
-function openProjectReview() {
+async function openProjectReview() {
+  if (!draft) return validateDraftForReview();
+  if (projectLookupTimer) clearTimeout(projectLookupTimer);
+  ++projectLookupSerial;
+  try {
+    // Resolve again at review time so Tracker changes made in another tab win.
+    await resolveIntakeSharedProject($("projectNumber").value);
+  } catch (error) {
+    showIntakeValidation(`Could not check the shared project registry: ${error.message}`);
+    return;
+  }
   if (!validateDraftForReview()) return;
   $("projectReviewContent").innerHTML = projectReviewSummaryHtml();
   const dialog = $("projectReviewDialog");
@@ -1371,17 +1519,22 @@ async function reconcileProjectRevision(existing, projectRecord) {
   }
 
   const now = new Date().toISOString();
-  const updatedProject = await updateRows("projects", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, {
-    project_number: projectRecord.projectNumber,
+  const forecastMetadataUpdate = {
+    // Project # is the immutable linking key once this shared project exists.
     revision: projectRecord.revision || null,
-    customer: projectRecord.customer || existing.customer || null,
-    sales: projectRecord.sales || existing.sales || null,
-    address_project_name: projectRecord.address || existing.address || null,
-    project_type: projectRecord.projectType === "sfd" ? "sfd" : "multi",
     default_delivery_date: projectRecord.defaultEstimatedDeliveryDate || null,
     updated_at: now,
     version: existing.version + 1
-  });
+  };
+  if (!isTrackerManaged(existing)) {
+    Object.assign(forecastMetadataUpdate, {
+      customer: projectRecord.customer || existing.customer || null,
+      sales: projectRecord.sales || existing.sales || null,
+      address_project_name: projectRecord.address || existing.address || null,
+      project_type: projectRecord.projectType === "sfd" ? "sfd" : "multi"
+    });
+  }
+  const updatedProject = await updateRows("projects", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, forecastMetadataUpdate);
   if (!updatedProject?.length) throw new Error("This project changed while the revision was being applied. Refresh and try again.");
 
   const usedLevelIds = new Set();
@@ -1504,10 +1657,24 @@ async function persistDraftProject() {
   const saveButton = $("confirmProjectSave");
   saveButton.disabled = true;
   saveButton.textContent = "Saving…";
+  if (projectLookupTimer) clearTimeout(projectLookupTimer);
+  ++projectLookupSerial;
   try {
-    await syncFromCloud({ silent: true });
-    const existing = state.projects.find(project => project.projectNumber.toLowerCase() === draft.projectNumber.toLowerCase());
-    if (existing) {
+    const freshRows = await loadCloudRows();
+    state = mapCloudRows(freshRows);
+    renderAll();
+    const existing = state.projects.find(project => sharedProjectNumber(project.projectNumber) === sharedProjectNumber(draft.projectNumber));
+    if (existing && isTrackerManaged(existing)) {
+      const before = [draft.customer, draft.sales, draft.address, draft.projectType].join("\u0001");
+      applyMatchedProjectToIntake(existing);
+      const after = [draft.customer, draft.sales, draft.address, draft.projectType].join("\u0001");
+      if (before !== after) {
+        $("projectReviewDialog").close("cancel");
+        alert("Project Tracking details changed while you were reviewing the import. The latest details are now filled in. Please review the project again before saving.");
+        return;
+      }
+    }
+    if (existing && existing.levels.length) {
       const message = `Project ${draft.projectNumber} already exists${existing.revision ? ` (${existing.revision})` : ""}.\n\nApply ${draft.revision || "this upload"} as a revision?\n\nExisting deliveries and audit history will be preserved. Matching levels/materials will be updated, new items added, and items removed by the revision archived from the active forecast.`;
       if (!confirm(message)) return;
     }
@@ -1649,6 +1816,7 @@ function levelHeaderHtml(project, level) {
       <div class="project-card-actions">
         <span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span>
         <div class="project-card-buttons">
+          <a class="mini-button tracker-project-link" href="../tracker/?project=${encodeURIComponent(project.projectNumber || '')}" title="Open this project in Tracking">Tracking ↗</a>
           <button class="mini-button primary-mini-button manage-level" data-project-id="${project.id}" data-level-id="${level.id}">Manage</button>
                     <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
           ${multiLevel ? `<button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Collapse</button>` : ""}
@@ -1672,6 +1840,7 @@ function collapsedProjectHeaderHtml(project) {
       <div class="project-card-actions">
         <span class="status-badge workflow-${workflow}">${workflowStatusLabel(workflow)}</span>
         <div class="project-card-buttons">
+          <a class="mini-button tracker-project-link" href="../tracker/?project=${encodeURIComponent(project.projectNumber || '')}" title="Open this project in Tracking">Tracking ↗</a>
           <button class="mini-button edit-project" data-project-id="${project.id}">Edit</button>
           <button class="mini-button toggle-project-collapse" data-project-id="${project.id}">Expand</button>
         </div>
@@ -1692,6 +1861,10 @@ function openProjectEdit(projectId) {
   $("editAddress").value = project.address || "";
   $("editProjectDate").value = project.defaultEstimatedDeliveryDate || "";
   $("editApplyDateAll").checked = false;
+  const managed = isTrackerManaged(project);
+  for (const id of ["editProjectNumber", "editCustomer", "editSales", "editAddress"]) $(id).readOnly = managed;
+  $("editProjectType").disabled = managed;
+  $("editProjectTrackerInfo").classList.toggle("hidden", !managed);
   $("projectEditDialog").showModal();
 }
 
@@ -1699,12 +1872,13 @@ async function saveProjectEdit() {
   if (!activeEditProject) return;
   const projectId = activeEditProject.id;
   const projectVersion = activeEditProject.version;
-  const projectNumber = normalizeSpaces($("editProjectNumber").value).toUpperCase();
+  const trackerManaged = isTrackerManaged(activeEditProject);
+  const projectNumber = trackerManaged ? activeEditProject.projectNumber : normalizeSpaces($("editProjectNumber").value).toUpperCase();
   const revision = normalizeSpaces($("editRevision").value).toUpperCase();
-  const customer = normalizeSpaces($("editCustomer").value);
-  const sales = normalizeSpaces($("editSales").value);
-  const projectType = $("editProjectType")?.value === "sfd" ? "sfd" : "multi";
-  const address = normalizeSpaces($("editAddress").value);
+  const customer = trackerManaged ? activeEditProject.customer : normalizeSpaces($("editCustomer").value);
+  const sales = trackerManaged ? activeEditProject.sales : normalizeSpaces($("editSales").value);
+  const projectType = trackerManaged ? activeEditProject.projectType : ($("editProjectType")?.value === "sfd" ? "sfd" : "multi");
+  const address = trackerManaged ? activeEditProject.address : normalizeSpaces($("editAddress").value);
   const defaultDate = $("editProjectDate").value;
   const applyAll = $("editApplyDateAll").checked;
 
@@ -1737,17 +1911,17 @@ async function saveProjectEdit() {
   button.disabled = true;
   button.textContent = "Saving…";
   try {
-    const updated = await updateRows("projects", { id: `eq.${projectId}`, version: `eq.${projectVersion}` }, {
-      project_number: projectNumber,
+    const updates = {
       revision: revision || null,
-      customer: customer || null,
-      sales: sales || null,
-      project_type: projectType,
-      address_project_name: address,
       default_delivery_date: defaultDate || null,
       updated_at: new Date().toISOString(),
       version: projectVersion + 1
+    };
+    if (!trackerManaged) Object.assign(updates, {
+      project_number: projectNumber, customer: customer || null,
+      sales: sales || null, project_type: projectType, address_project_name: address
     });
+    const updated = await updateRows("projects", { id: `eq.${projectId}`, version: `eq.${projectVersion}` }, updates);
     if (!updated?.length) throw new Error("This project was changed by another user while you were editing it. The shared data will be reloaded so you can review the latest version.");
 
     if (applyAll) {
@@ -4066,9 +4240,10 @@ async function importProjectsToCloud(importState, label) {
   if (!validProjects.length) throw new Error("No valid projects were found in this import.");
   if (!confirm(`${label} contains ${validProjects.length} project${validProjects.length === 1 ? "" : "s"}.\n\nMatching Project # records will be reconciled in place so existing delivery history is preserved. Continue?`)) return;
 
-  await syncFromCloud({ silent: true });
+  const freshRows = await loadCloudRows();
+  state = mapCloudRows(freshRows);
   for (const project of validProjects) {
-    const existing = state.projects.find(item => item.projectNumber.toLowerCase() === project.projectNumber.toLowerCase());
+    const existing = state.projects.find(item => sharedProjectNumber(item.projectNumber) === sharedProjectNumber(project.projectNumber));
     let projectId;
     if (existing) {
       const summary = await reconcileProjectRevision(existing, project);
@@ -4229,17 +4404,7 @@ function wireEvents() {
     if (!confirm("Sign out of EWP Material Forecast?")) return;
     await stopRealtime();
     await signOut();
-    currentUserName = "";
-    renderCurrentUser();
-    state = { version: SCHEMA_VERSION, projects: [], inventoryMaterials: [], purchaseOrders: [], incomingOrders: [] };
-    renderAll();
-    setCloudStatus("connecting", "Sign in required");
-    const session = await openLoginDialog();
-    if (session?.user) {
-      setCloudStatus("connecting", "Connecting to shared data…");
-      await syncFromCloud();
-      await startLiveSync();
-    }
+    window.location.assign("../");
   });
   document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $("addProjectTop").addEventListener("click", () => setTab("intake"));
@@ -4355,6 +4520,8 @@ function wireEvents() {
       if (message && !message.classList.contains("hidden")) clearIntakeValidation();
     });
   });
+  $("projectNumber").addEventListener("input", queueProjectNumberLookup);
+  $("projectNumber").addEventListener("change", queueProjectNumberLookup);
 
   $("applyDateAll").addEventListener("change", () => {
     if (!draft) {
@@ -4790,6 +4957,18 @@ function wireEvents() {
       syncFromCloud({ silent: true });
     }
   });
+  // Same-origin Tracker edits notify an already-open Forecast tab immediately.
+  window.addEventListener("storage", event => {
+    if (event.key === "ewp_shared_projects_changed" && !hasOpenDialog()) {
+      syncFromCloud({ silent: true });
+    }
+  });
+  // Fallback if Realtime is unavailable and another employee updated the registry.
+  window.setInterval(() => {
+    if (currentUserName && document.visibilityState === "visible" && !hasOpenDialog() && !syncInProgress) {
+      syncFromCloud({ silent: true });
+    }
+  }, 60000);
 }
 
 async function init() {
@@ -4806,6 +4985,23 @@ async function init() {
     if (!session?.user) throw new Error("Authentication did not return a signed-in user.");
     setCloudStatus("connecting", "Connecting to shared data…");
     await syncFromCloud();
+    // Project # is the single shared key between Tracking and Forecast.
+    const requestedProject = (new URLSearchParams(location.search).get('project') || '').trim().slice(0, 80);
+    if (requestedProject) {
+      const project = state.projects.find(item => sharedProjectNumber(item.projectNumber) === sharedProjectNumber(requestedProject));
+      if (project && !(project.levels || []).length) {
+        // Tracker created this record but no PDF/material data have been imported yet.
+        setTab('intake');
+        $('projectNumber').value = project.projectNumber;
+        $('projectNumber').dispatchEvent(new Event('input', { bubbles: true }));
+      } else {
+        if ($('projectSearchField')) $('projectSearchField').value = 'projectNumber';
+        $('projectSearch').value = requestedProject;
+        updateProjectSearchPlaceholder();
+        setTab('matrix');
+        renderMatrix();
+      }
+    }
     await startLiveSync();
   } catch (error) {
     console.error("EWP Forecast startup failed", error);

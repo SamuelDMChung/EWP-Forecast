@@ -1,5 +1,5 @@
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from "./config.mjs";
-import { getAccessToken } from "./auth.mjs";
+import { getAccessToken } from "./auth.mjs?v=1.0-p3";
 
 const REST_URL = `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1`;
 
@@ -67,6 +67,19 @@ export async function loadCloudRows() {
   };
 }
 
+
+// Fresh project-number lookup, independent of Forecast's potentially stale in-memory state.
+// The Phase 2 unique index guarantees one project per normalized number.
+export async function findSharedProjectByNumber(number) {
+  const normalized = String(number || "").trim().toUpperCase();
+  if (!normalized) return null;
+  const matches = await request("projects", { params: {
+    select: "*",
+    project_number: `ilike.${normalized.replace(/[\%_]/g, match => `\\${match}`)}`,
+    limit: "10"
+  }});
+  return (matches || []).find(row => String(row.project_number || "").trim().toUpperCase() === normalized) || null;
+}
 
 export async function loadActivityRows({ limit = 101 } = {}) {
   return request("activity_log", {

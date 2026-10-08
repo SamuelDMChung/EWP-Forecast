@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EWP Project Tracker — Shared Cloud</title>
-  <link rel="stylesheet" href="styles.css?v=1.0-p2" />
-  <link rel="stylesheet" href="../portal-nav.css?v=1.0-p1" />
+  <link rel="stylesheet" href="styles.css?v=1.0-p3" />
+  <link rel="stylesheet" href="../portal-nav.css?v=1.0-p3" />
 </head>
 <body>
   <nav class="ewp-portal-nav" aria-label="EWP Management Portal navigation">
@@ -15,6 +15,7 @@
       <a class="ewp-portal-nav__link" href="../tracker/" aria-current="page">Project Tracking</a>
       <a class="ewp-portal-nav__link" href="../forecast/">EWP Forecast</a>
     </div>
+    <span class="ewp-portal-nav__account" id="ewpNavAccount" aria-live="polite"></span>
   </nav>
 
   <div class="tracker-cloud-top" role="status"><span id="trackerCloudMessage">Connecting to Supabase…</span>
@@ -36,7 +37,7 @@
     <div class="brand-wrap">
       <div class="brand-kicker">EWP PROJECT TRACKING</div>
       <h1>EWP Project Tracker</h1>
-      <div class="version-line">Phase 2 · Shared Supabase · Developed by Samuel Chung @ Griff</div>
+      <div class="version-line">Phase 3 · Shared Supabase · Developed by Samuel Chung @ Griff</div>
       <button id="settingsButton" class="settings-gear" type="button" aria-label="Settings" title="Settings">⚙</button>
     </div>
   </header>
@@ -471,10 +472,12 @@
       <div class="card-detail"><span>Due</span><strong class="due-date"></strong></div>
       <div class="card-detail"><span>Assignee</span><strong class="assignee"></strong></div>
       <div class="card-detail"><span>Sales</span><strong class="sales"></strong></div>
+      <a class="forecast-project-link" href="../forecast/">Open in Forecast ↗</a>
     </article>
   </template>
 
   </div>
-  <script type="module" src="app.js?v=1.0-p2"></script>
+  <script type="module" src="app.js?v=1.0-p3"></script>
+  <script type="module" src="../workspace-auth.mjs?v=1.0-p3"></script>
 </body>
 </html>

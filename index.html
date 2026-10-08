@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light" />
   <meta name="description" content="EWP Management Portal — Project Tracking and EWP Forecast in one place." />
   <title>EWP Management Portal</title>
-  <link rel="stylesheet" href="portal.css?v=1.0-p2" />
+  <link rel="stylesheet" href="portal.css?v=1.0-p3" />
 </head>
 <body>
   <div class="page">
@@ -19,7 +19,20 @@
       </div>
     </header>
     <main>
-      <h2 class="section-title">Your workspaces</h2>
+      <section id="portalAuthLoading" class="portal-auth-loading" role="status" aria-live="polite">Restoring your EWP Management session…</section>
+      <section id="portalLogin" class="portal-login" hidden aria-labelledby="portalLoginTitle">
+        <div class="portal-login-copy"><span class="eyebrow">SHARED ACCESS</span><h2 id="portalLoginTitle">Sign in once. Work across both tools.</h2>
+          <p>Use your existing EWP Forecast Supabase account for both Project Tracking and Forecast. Your session stays signed in across normal refreshes.</p></div>
+        <form id="portalLoginForm" class="portal-login-form">
+          <label for="portalLoginEmail">Email</label><input id="portalLoginEmail" type="email" autocomplete="username" required />
+          <label for="portalLoginPassword">Password</label><input id="portalLoginPassword" type="password" autocomplete="current-password" required />
+          <p id="portalLoginError" class="portal-login-error" role="alert" hidden></p>
+          <button id="portalLoginButton" class="portal-primary-button" type="submit">Sign in</button>
+        </form>
+      </section>
+      <div id="portalWorkspace" hidden>
+        <div class="portal-signed-in"><span>Signed in as <strong id="portalCurrentEmail"></strong></span><button id="portalSignOut" type="button">Sign out</button></div>
+        <h2 class="section-title">Your workspaces</h2>
       <div class="workspace-grid">
         <a class="workspace-card" href="tracker/" aria-label="Open Project Tracking">
           <span class="card-icon card-icon-tracker" aria-hidden="true">
@@ -40,12 +53,14 @@
           <span class="card-bottom"><span class="card-meta">Projects · Forecast · Inventory</span><span class="open-link">Open workspace <span aria-hidden="true">↗</span></span></span>
         </a>
       </div>
-      <aside class="notice" aria-label="Phase 1 information">
+      <aside class="notice" aria-label="Shared project information">
         <span class="notice-icon" aria-hidden="true">i</span>
-        <div><strong>Phase 2 — Shared projects in Supabase</strong><p>Both workspaces now share Supabase project information. Project Tracking saves cloud projects and tasks; Forecast continues handling PDFs, Spruce and inventory. Portal-wide login improvements come in Phase 3.</p></div>
+        <div><strong>One Supabase project registry</strong><p>Create projects in either workspace. Project # connects the records, and Project Tracking has priority when shared customer, sales or address details conflict.</p></div>
       </aside>
+      </div>
     </main>
-    <footer><span>EWP Management Portal · V1.0 Phase 1</span><span>Developed by Samuel Chung @ Griff</span></footer>
+    <footer><span>EWP Management Portal · V1.0 Phase 3</span><span>Developed by Samuel Chung @ Griff</span></footer>
   </div>
+  <script type="module" src="portal-auth.mjs?v=1.0-p3"></script>
 </body>
 </html>

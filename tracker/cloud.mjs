@@ -1,5 +1,5 @@
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from '../forecast/config.mjs';
-import { getAccessToken } from '../forecast/auth.mjs';
+import { getAccessToken } from '../forecast/auth.mjs?v=1.0-p3';
 const REST = `${SUPABASE_URL.replace(/\/$/,'')}/rest/v1`;
 
 async function request(path, { method='GET', body, prefer='' }={}) {

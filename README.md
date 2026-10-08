@@ -1,6 +1,44 @@
-# EWP Management Portal — V1.0 Phase 2 (Shared Database)
+# EWP Management Portal — V1.0 Phase 3 (Integrated Portal)
 
 **Developed by Samuel Chung @ Griff**
+
+## Phase 3 — Unified login and cross-app workflow
+
+This release builds on the **working Phase 2.1 project-number authority fix** and the existing **Forecast V0.27** operational workflows.
+
+- **One login at the portal**: use the existing Supabase credentials at the main homepage. That authenticated browser session is reused in Tracking and Forecast, and restored on normal refresh. All navigation stays under the same GitHub Pages origin.
+- **Single sign-out**: signing out of the portal or either tool ends that browser's session. Open pages in other tabs react to a sign-out via browser storage events.
+- **Direct routes**: if someone bookmarks `/tracker/` or `/forecast/` without a session, they are returned to the portal login; after signing in they can continue to the requested workspace.
+- **Project # links**: Project Tracking board cards and list rows link to the Forecast project. Forecast project/level cards link back to Tracking. Direct links carry the Project # as a URL parameter and pre-filter or pre-fill the destination.
+- **Tracker cloud refresh**: optional Realtime notifications for shared project/task/settings changes, with refresh on focus, across-tab notification, manual refresh, and 60-second foreground fallback. The external Supabase JS module is loaded only for Realtime. If it cannot load, all core operations still use Supabase REST.
+- **Supabase session handling**: updates to shared session tokens are synchronized between tabs. Where supported, refresh is guarded by a browser-level lock to reduce simultaneous refresh-token conflicts.
+- **Protected Forecast workflow**: PDF parsing, original material quantities, Last Package, Spruce/delivery logic, inventory, purchase orders, and prior data are not modified. Tracker authority on conflicting customer/sales/address values remains as in Phase 2.1.
+
+### Installation (Phase 3)
+
+1. Back up your existing GitHub repository (and ideally your Supabase database).
+2. This release requires **no new schema migration**. Your previous successful `phase2_migration.sql` and the Forecast V0.26 schema remain valid.
+3. Extract the ZIP. Copy all its contents to the GitHub repository root, replacing `index.html`, scripts, styles, and the `tracker/` and `forecast/` folders as appropriate.
+4. Commit and **Push origin**, wait for GitHub Pages, then open the portal URL. Versioned JavaScript/CSS imports for Phase 3 are included to reduce stale-browser-code problems.
+5. Log in once at the portal, navigate to both tools, test cross-links, create/edit a test project, refresh, and sign out. Verify both creation paths and protected forecast/delivery records.
+6. **Optional**: Run `phase3_realtime_optional.sql` in Supabase SQL Editor to enable publication of Tracker tables for faster live updates between different employees. The SQL is idempotent and does not delete records. Without it, focus/refresh/foreground 60-second fallback remains active.
+
+### Scope and limitations
+
+- **No role-based permissions** were added. Existing Supabase RLS team-wide authenticated permissions remain; restrict Supabase accounts to intended employees.
+- Realtime requires a working Supabase Realtime service and tables in `supabase_realtime`; if blocked or offline, use Refresh or reopen the tab.
+- The main portal is a navigation/login surface; Tracking and Forecast retain separate interfaces and specialized statuses. One Project # links both in a single `projects` registry.
+- Automated local tests include syntax/paths and simulated login / Tracker interaction. Live-company-Supabase end-to-end testing still needs your final deployment test.
+
+## Phase 2.1 — Project Tracking is authoritative
+
+- **Project #** matches the same shared Supabase `projects` record (case-insensitive), for projects made in either tool.
+- Forecast looks up that project directly in Supabase when the user types a number and after a Javelin PDF import, pre-filling Customer, Sales, Project Name/Address and Type.
+- For Tracker-managed records, those shared fields are read-only in Forecast and always use Tracker values, even when a PDF contains conflicting details. Forecast still owns Revision, dates, levels and materials.
+- PDF revisions and bulk imports no longer overwrite shared Tracker-managed fields. The final save re-checks the server and requests a new review if Tracker data changed during entry.
+- A Tracker-only record is linked by Project # when its first PDF is imported; subsequent imports reconcile the same project without duplicating the registry record.
+- Changes saved in Tracking notify other open portal tabs; Forecast also refreshes on tab focus, Realtime notifications, or a once-a-minute foreground fallback.
+- **No additional SQL:** `phase2_migration.sql` must already have succeeded. There is no new schema change in this hotfix.
 
 ## What's new
 
