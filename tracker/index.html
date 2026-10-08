@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EWP Project Tracker — V0.5</title>
-  <link rel="stylesheet" href="styles.css" />
+  <title>EWP Project Tracker — Shared Cloud</title>
+  <link rel="stylesheet" href="styles.css?v=1.0-p2" />
   <link rel="stylesheet" href="../portal-nav.css?v=1.0-p1" />
 </head>
 <body>
@@ -17,11 +17,26 @@
     </div>
   </nav>
 
+  <div class="tracker-cloud-top" role="status"><span id="trackerCloudMessage">Connecting to Supabase…</span>
+    <button type="button" id="trackerReload">Refresh</button>
+    <button type="button" id="trackerSignOut">Sign out</button>
+  </div>
+  <section id="trackerLogin" class="tracker-login hidden" aria-label="Sign in to shared project tracking">
+    <form id="trackerLoginForm" class="tracker-login-card">
+      <h2>EWP Management Sign In</h2>
+      <p>Use the same Supabase account as EWP Forecast.</p>
+      <label>Email <input id="trackerLoginEmail" type="email" required autocomplete="username" /></label>
+      <label>Password <input id="trackerLoginPassword" type="password" required autocomplete="current-password" /></label>
+      <button type="submit" class="btn btn-primary">Sign in</button>
+      <p id="trackerLoginError" class="tracker-cloud-error" role="alert"></p>
+    </form>
+  </section>
+  <div id="trackerWorkspace" class="hidden">
   <header class="site-header">
     <div class="brand-wrap">
       <div class="brand-kicker">EWP PROJECT TRACKING</div>
       <h1>EWP Project Tracker</h1>
-      <div class="version-line">Version 0.5 · Developed by Samuel Chung @ Griff</div>
+      <div class="version-line">Phase 2 · Shared Supabase · Developed by Samuel Chung @ Griff</div>
       <button id="settingsButton" class="settings-gear" type="button" aria-label="Settings" title="Settings">⚙</button>
     </div>
   </header>
@@ -459,6 +474,7 @@
     </article>
   </template>
 
-  <script src="app.js"></script>
+  </div>
+  <script type="module" src="app.js?v=1.0-p2"></script>
 </body>
 </html>

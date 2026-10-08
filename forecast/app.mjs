@@ -856,14 +856,17 @@ async function handlePdf(file) {
     const parsed = parseMaterialReportLines(lines, file.name);
     if (!parsed.levels.length) throw new Error("I found the PDF text, but no Total Lengths section could be confidently read.");
 
+    // Phase 2: a PDF may belong to a project already entered in Project Tracking.
+    // Prefill shared fields rather than making staff re-enter Sales and Customer.
+    const registered = state.projects.find(item => item.projectNumber.toLowerCase() === String(parsed.projectNumber || "").trim().toLowerCase());
     draft = {
       sourceFileName: file.name,
       projectNumber: parsed.projectNumber || "",
       revision: parsed.revision || "",
-      customer: "",
-      sales: "",
-      projectType: $("projectType")?.value === "sfd" ? "sfd" : "multi",
-      address: parsed.address || "",
+      customer: registered?.customer || "",
+      sales: registered?.sales || "",
+      projectType: registered?.projectType || ($("projectType")?.value === "sfd" ? "sfd" : "multi"),
+      address: parsed.address || registered?.address || "",
       defaultEstimatedDeliveryDate: $("projectDate").value || "",
       levels: parsed.levels.map(level => ({
         id: uid(),
@@ -1371,9 +1374,9 @@ async function reconcileProjectRevision(existing, projectRecord) {
   const updatedProject = await updateRows("projects", { id: `eq.${existing.id}`, version: `eq.${existing.version}` }, {
     project_number: projectRecord.projectNumber,
     revision: projectRecord.revision || null,
-    customer: projectRecord.customer || null,
-    sales: projectRecord.sales || null,
-    address_project_name: projectRecord.address || null,
+    customer: projectRecord.customer || existing.customer || null,
+    sales: projectRecord.sales || existing.sales || null,
+    address_project_name: projectRecord.address || existing.address || null,
     project_type: projectRecord.projectType === "sfd" ? "sfd" : "multi",
     default_delivery_date: projectRecord.defaultEstimatedDeliveryDate || null,
     updated_at: now,

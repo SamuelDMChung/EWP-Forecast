@@ -888,3 +888,16 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
   .work-items-heading { flex-direction: column; }
   .work-item-grid { grid-template-columns: 1fr; }
 }
+
+/* Phase 2: explicit cloud-only state; do not reveal editable local data before authentication. */
+.tracker-cloud-top { display:flex;align-items:center;gap:12px;padding:9px 26px;background:#f0f5ff;border-bottom:1px solid #d9e4fa;font-size:12px;color:#34405e; }
+.tracker-cloud-top span { flex:1; }
+.tracker-cloud-top button { border:1px solid #c5d4ea;background:white;border-radius:7px;padding:5px 10px;cursor:pointer; }
+.tracker-cloud-error { color:#b42318!important; }
+.tracker-login { padding:60px 18px;min-height:55vh;background:#f8fafc; }
+.tracker-login-card { width:min(430px,100%);margin:auto;padding:28px;border:1px solid #d6deeb;border-radius:14px;background:white;box-shadow:0 6px 22px #14253b11;display:grid;gap:13px; }
+.tracker-login-card h2 { margin:0; }
+.tracker-login-card p { margin:0;color:#667085; }
+.tracker-login-card label { display:grid;gap:5px;font-size:13px;font-weight:600; }
+.tracker-login-card input { width:100%;padding:10px;border:1px solid #ccd4e0;border-radius:8px; }
+.tracker-login-card button { padding:12px; }

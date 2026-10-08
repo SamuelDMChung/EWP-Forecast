@@ -1,21 +1,26 @@
+import { restoreSession, signInWithPassword, signOut, getCurrentSession } from '../forecast/auth.mjs';
+import { loadTrackerCloud, saveTrackerProject, moveTrackerWorkItem, deleteTrackerProject, getNextTrackerNumber, saveTrackerSettings, addTrackerFilter, removeTrackerFilter } from './cloud.mjs';
+
 (() => {
-  const PROJECTS_KEY = 'tc_project_tracker_v01_projects';
+  const PROJECTS_KEY = 'tc_project_tracker_v01_projects'; // legacy browser data; never used as authoritative data
   const OLD_COUNTER_KEY = 'tc_project_tracker_v01_counters';
   const SETTINGS_KEY = 'ewp_project_tracker_v02_settings';
   const ISSUED_COUNTER_KEY = 'ewp_project_tracker_v03_issued_counters';
   const SAVED_FILTERS_KEY = 'ewp_project_tracker_v04_saved_filters';
 
   const defaultSettings = { sales: [], assignees: [], tasks: [] };
-  let projects = loadProjects();
-  let settings = loadSettings();
-  let issuedCounters = loadIssuedCounters();
-  let savedFilters = loadSavedFilters();
+  let projects = [];
+  let settings = { ...defaultSettings };
+  let issuedCounters = {};
+  let savedFilters = [];
   let activeFilters = createEmptyFilters();
   let activeSavedFilterId = '';
   let draggedWorkItem = null;
   let dragOccurred = false;
   let editingProjectId = null;
   let currentPrimaryView = 'board';
+  let cloudReady = false;
+  let syncing = false;
 
   const lists = {
     queue: document.getElementById('queueList'),
@@ -76,79 +81,63 @@
     return normalized;
   }
 
-  function loadProjects() {
+  // Phase 2 cloud is the only source of truth. No automatic localStorage import:
+  // it risks overwriting more recent team data and is origin/path dependent.
+  function cloudMessage(text, failed=false) {
+    const el=document.getElementById('trackerCloudMessage');
+    if (!el) return;
+    el.textContent=text;
+    el.classList.toggle('tracker-cloud-error',failed);
+  }
+  function setCloudReady(value) {
+    cloudReady=value;
+    document.getElementById('trackerWorkspace').classList.toggle('hidden',!value);
+  }
+  function fromRow(row, workItems) {
+    const type=row.tracker_project_type || (row.project_type === 'sfd' ? 'SFD' : 'Multi');
+    return {
+      id:row.id, version:Number(row.version||1), projectNumber:row.project_number||'',
+      sales:row.sales||'',customer:row.customer||'',address:row.address_project_name||'',
+      phase:row.tracker_phase||'Awarded', projectType:type,
+      projectTypeOther:row.tracker_project_type_other||'',
+      largeTji:row.tracker_large_tji||'No',aplRequired:row.tracker_apl_required||'No',
+      dateSubmitted:row.tracker_date_submitted||'',dueDate:row.tracker_due_date||'',
+      createdAt:row.created_at||'',updatedAt:row.updated_at||'',
+      workItems:workItems.filter(item=>item.project_id===row.id).map(item=>({
+        id:item.id,task:item.task||'',assignee:item.assignee||'',dueDate:item.due_date||'',
+        status:normalizeStatus(item.status),startedAt:item.started_at||null,
+        completedAt:item.completed_at||null,createdAt:item.created_at||'',updatedAt:item.updated_at||''
+      }))
+    };
+  }
+  async function syncCloud(message='Shared data synced') {
+    if (syncing) return;
+    syncing=true;
     try {
-      const parsed = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
-      if (!Array.isArray(parsed)) return [];
-      const normalized = parsed.map(normalizeProject);
-      localStorage.setItem(PROJECTS_KEY, JSON.stringify(normalized));
-      return normalized;
-    } catch {
-      return [];
-    }
+      const data=await loadTrackerCloud();
+      projects=(data.projects||[]).map(item=>fromRow(item,data.workItems||[]));
+      settings={sales:data.settings.sales||[],assignees:data.settings.assignees||[],tasks:data.settings.tasks||[]};
+      savedFilters=(data.filters||[]).map(row=>({id:row.id,name:row.name,search:row.search||'',filters:row.filters||{},createdAt:row.created_at||''}));
+      issuedCounters={};
+      const yy=currentYY();
+      const next=Number(await getNextTrackerNumber(yy));
+      if (Number.isFinite(next)&&next>0) issuedCounters[yy]=next-1;
+      setCloudReady(true);
+      cloudMessage(message);
+      render();
+    } catch(error) {
+      cloudMessage(`Cloud error: ${error.message}`,true);
+      throw error;
+    } finally { syncing=false; }
   }
-
-  function saveProjects() {
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+  async function withCloud(action) {
+    if(!cloudReady) return;
+    try { await action(); }
+    catch(error) { console.error(error); cloudMessage(error.message,true); alert(error.message); await syncCloud('Shared data reloaded').catch(()=>{}); }
   }
-
-  function loadSettings() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-      return {
-        sales: Array.isArray(parsed.sales) ? parsed.sales : [],
-        assignees: Array.isArray(parsed.assignees) ? parsed.assignees : [],
-        tasks: Array.isArray(parsed.tasks) ? parsed.tasks : []
-      };
-    } catch {
-      return { ...defaultSettings };
-    }
-  }
-
-  function saveSettings() {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  }
-
-  function loadIssuedCounters() {
-    let counters = {};
-    try {
-      const parsed = JSON.parse(localStorage.getItem(ISSUED_COUNTER_KEY) || '{}');
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) counters = parsed;
-    } catch { /* ignore malformed stored data */ }
-
-    projects.forEach(project => {
-      const match = String(project.projectNumber || '').match(/^TC(\d{2})(\d{3})$/i);
-      if (!match) return;
-      counters[match[1]] = Math.max(Number(counters[match[1]] || 0), Number(match[2]));
-    });
-
-    try {
-      const oldCounters = JSON.parse(localStorage.getItem(OLD_COUNTER_KEY) || '{}');
-      Object.entries(oldCounters).forEach(([year, value]) => {
-        const yy = String(year).slice(-2);
-        counters[yy] = Math.max(Number(counters[yy] || 0), Number(value || 0));
-      });
-    } catch { /* ignore malformed stored data */ }
-
-    localStorage.setItem(ISSUED_COUNTER_KEY, JSON.stringify(counters));
-    return counters;
-  }
-
-  function saveIssuedCounters() {
-    localStorage.setItem(ISSUED_COUNTER_KEY, JSON.stringify(issuedCounters));
-  }
-
-  function loadSavedFilters() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(SAVED_FILTERS_KEY) || '[]');
-      return Array.isArray(parsed) ? parsed.filter(item => item && item.id && item.name) : [];
-    } catch {
-      return [];
-    }
-  }
-
-  function saveSavedFilters() {
-    localStorage.setItem(SAVED_FILTERS_KEY, JSON.stringify(savedFilters));
+  async function addSettingCloud() {
+    await saveTrackerSettings(settings);
+    cloudMessage('Settings saved to Supabase');
   }
 
   function todayISO() {
@@ -192,7 +181,6 @@
   function raiseIssuedCounter(prefix, sequence) {
     const yy = yyFromPrefix(prefix);
     issuedCounters[yy] = Math.max(Number(issuedCounters[yy] || 0), Number(sequence || 0));
-    saveIssuedCounters();
   }
 
   function buildProjectNumber(prefix, suffix) {
@@ -1033,26 +1021,26 @@
       remove.type = 'button';
       remove.textContent = '×';
       remove.title = `Remove ${value}`;
-      remove.addEventListener('click', () => removeSetting(key, value));
+      remove.addEventListener('click', () => withCloud(() => removeSetting(key, value))); 
       chip.append(text, remove);
       list.appendChild(chip);
     });
   }
 
-  function addSetting(key, rawValue) {
+  async function addSetting(key, rawValue) {
     const value = String(rawValue || '').trim();
     if (!value) return false;
     if (settings[key].some(existing => existing.toLowerCase() === value.toLowerCase())) return false;
     settings[key].push(value);
     settings[key].sort((a, b) => a.localeCompare(b));
-    saveSettings();
+    await addSettingCloud();
     render();
     return true;
   }
 
-  function removeSetting(key, value) {
+  async function removeSetting(key, value) {
     settings[key] = settings[key].filter(item => item !== value);
-    saveSettings();
+    await addSettingCloud();
     render();
   }
 
@@ -1101,19 +1089,15 @@
     return true;
   }
 
-  function moveWorkItem(projectId, workItemId, newStatus) {
-    const project = projects.find(item => item.id === projectId);
-    const workItem = project?.workItems?.find(item => item.id === workItemId);
-    if (!project || !workItem || workItem.status === newStatus) return;
-    const now = new Date().toISOString();
-    workItem.status = normalizeStatus(newStatus);
-    workItem.updatedAt = now;
-    project.updatedAt = now;
-    if (newStatus === 'in_progress' && !workItem.startedAt) workItem.startedAt = now;
-    if (newStatus === 'done') workItem.completedAt = now;
-    if (newStatus !== 'done') workItem.completedAt = null;
-    saveProjects();
-    render();
+  async function moveWorkItem(projectId, workItemId, newStatus) {
+    if (!cloudReady) return;
+    const project=projects.find(item=>item.id===projectId);
+    const item=project?.workItems?.find(item=>item.id===workItemId);
+    if (!item || item.status===newStatus) return;
+    await withCloud(async()=>{
+      await moveTrackerWorkItem(workItemId,newStatus);
+      await syncCloud('Work item status saved');
+    });
   }
 
   function openEditProject(projectId, focusWorkItemId = null) {
@@ -1121,8 +1105,12 @@
     if (!project) return;
     editingProjectId = projectId;
     document.getElementById('editDialogTitle').textContent = `${project.projectNumber} · ${statusLabel(projectStatus(project))}`;
-    document.getElementById('editProjectPrefix').textContent = projectPrefix(project.projectNumber);
-    document.getElementById('editProjectSuffix').value = projectSuffix(project.projectNumber);
+    const isTcNumber=/^TC\d{5}$/i.test(project.projectNumber);
+    document.getElementById('editProjectPrefix').textContent = isTcNumber ? projectPrefix(project.projectNumber) : project.projectNumber;
+    document.getElementById('editProjectSuffix').value = isTcNumber ? projectSuffix(project.projectNumber) : '';
+    document.getElementById('editProjectSuffix').disabled = !isTcNumber;
+    document.getElementById('editProjectSuffix').required = isTcNumber;
+    document.getElementById('editProjectSuffix').classList.toggle('hidden',!isTcNumber);
     document.getElementById('editSales').value = project.sales || '';
     document.getElementById('editCustomer').value = project.customer || '';
     document.getElementById('editAddress').value = project.address || '';
@@ -1187,7 +1175,7 @@
     addWorkItemEditor('editWorkItemsContainer', { status: 'queue' }, 'edit');
   });
 
-  projectForm.addEventListener('submit', event => {
+  projectForm.addEventListener('submit', async event => {
     event.preventDefault();
     const error = document.getElementById('formError');
     error.textContent = '';
@@ -1217,38 +1205,29 @@
     const workItems = collectWorkItems('newWorkItemsContainer', error);
     if (!workItems || !validateWorkItemDates(workItems, submitted, error)) return;
 
-    const now = new Date().toISOString();
-    const sequence = Number(projectNumber.slice(-3));
-    projects.push({
-      id: uid('project'),
-      projectNumber,
-      sequenceYear: new Date().getFullYear(),
-      sequenceNumber: sequence,
-      sales: document.getElementById('sales').value.trim(),
-      customer: document.getElementById('customer').value.trim(),
-      address: document.getElementById('address').value.trim(),
-      phase: document.getElementById('phase').value,
-      projectType: document.getElementById('projectType').value,
-      projectTypeOther: document.getElementById('projectTypeOther').value.trim(),
-      largeTji: projectForm.querySelector('input[name="largeTji"]:checked')?.value || 'No',
-      aplRequired: projectForm.querySelector('input[name="aplRequired"]:checked')?.value || 'No',
-      dateSubmitted: submitted,
-      dueDate: due,
-      workItems,
-      createdAt: now,
-      updatedAt: now
+    await withCloud(async()=>{
+      const now=new Date().toISOString();
+      const payload={
+        projectNumber,autoNumber:projectNumber===nextProjectNumber(), sales:document.getElementById('sales').value.trim(),
+        customer:document.getElementById('customer').value.trim(),
+        address:document.getElementById('address').value.trim(),
+        phase:document.getElementById('phase').value,
+        projectType:document.getElementById('projectType').value,
+        projectTypeOther:document.getElementById('projectTypeOther').value.trim(),
+        largeTji:projectForm.querySelector('input[name="largeTji"]:checked')?.value||'No',
+        aplRequired:projectForm.querySelector('input[name="aplRequired"]:checked')?.value||'No',
+        dateSubmitted:submitted,dueDate:due
+      };
+      const created=await saveTrackerProject(payload,workItems.map(item=>({...item,id:item.id||crypto.randomUUID(),createdAt:now})),null);
+      await syncCloud(`Project ${created?.project_number || projectNumber} created in Supabase`);
+      prepareNewProjectForm(true);
+      switchView('board');
     });
-
-    raiseIssuedCounter(prefix, sequence);
-    saveProjects();
-    render();
-    prepareNewProjectForm(true);
-    switchView('board');
   });
 
   document.getElementById('clearProjectForm').addEventListener('click', () => prepareNewProjectForm(true));
 
-  editForm.addEventListener('submit', event => {
+  editForm.addEventListener('submit', async event => {
     event.preventDefault();
     const error = document.getElementById('editError');
     error.textContent = '';
@@ -1261,7 +1240,7 @@
     const project = projects.find(item => item.id === editingProjectId);
     if (!project) return;
     const prefix = document.getElementById('editProjectPrefix').textContent.trim();
-    const projectNumber = buildProjectNumber(prefix, document.getElementById('editProjectSuffix').value);
+    const projectNumber = /^TC\d{2}$/i.test(prefix) ? buildProjectNumber(prefix, document.getElementById('editProjectSuffix').value) : project.projectNumber;
     if (!projectNumber) {
       error.textContent = 'Project number must end in exactly 3 digits.';
       return;
@@ -1277,55 +1256,46 @@
     const workItems = collectWorkItems('editWorkItemsContainer', error, project);
     if (!workItems || !validateWorkItemDates(workItems, submitted, error)) return;
 
-    const sequence = Number(projectNumber.slice(-3));
-    Object.assign(project, {
-      projectNumber,
-      sequenceNumber: sequence,
-      sales: document.getElementById('editSales').value.trim(),
-      customer: document.getElementById('editCustomer').value.trim(),
-      address: document.getElementById('editAddress').value.trim(),
-      phase: document.getElementById('editPhase').value,
-      projectType: document.getElementById('editProjectType').value,
-      projectTypeOther: document.getElementById('editProjectTypeOther').value.trim(),
-      largeTji: editForm.querySelector('input[name="editLargeTji"]:checked')?.value || 'No',
-      aplRequired: editForm.querySelector('input[name="editAplRequired"]:checked')?.value || 'No',
-      dateSubmitted: submitted,
-      dueDate: due,
-      workItems,
-      updatedAt: new Date().toISOString()
+    await withCloud(async()=>{
+      const payload={
+        id:project.id,projectNumber,
+        sales:document.getElementById('editSales').value.trim(),
+        customer:document.getElementById('editCustomer').value.trim(),
+        address:document.getElementById('editAddress').value.trim(),
+        phase:document.getElementById('editPhase').value,
+        projectType:document.getElementById('editProjectType').value,
+        projectTypeOther:document.getElementById('editProjectTypeOther').value.trim(),
+        largeTji:editForm.querySelector('input[name="editLargeTji"]:checked')?.value||'No',
+        aplRequired:editForm.querySelector('input[name="editAplRequired"]:checked')?.value||'No',
+        dateSubmitted:submitted,dueDate:due
+      };
+      await saveTrackerProject(payload,workItems.map(item=>({...item,id:item.id||crypto.randomUUID()})),project.version);
+      closeEditProject();
+      await syncCloud('Project changes saved');
     });
-
-    // Remove legacy single-task fields after migration to V0.5.
-    delete project.task;
-    delete project.assignee;
-    delete project.status;
-    delete project.startedAt;
-    delete project.completedAt;
-
-    raiseIssuedCounter(prefix, sequence);
-    saveProjects();
-    render();
-    closeEditProject();
   });
 
-  document.getElementById('deleteProject').addEventListener('click', () => {
+  document.getElementById('deleteProject').addEventListener('click', async () => {
     if (!editingProjectId) return;
     const project = projects.find(item => item.id === editingProjectId);
     if (!project) return;
     const count = project.workItems?.length || 0;
     const confirmed = window.confirm(`Delete ${project.projectNumber} and its ${count} work item${count === 1 ? '' : 's'}?\n\nThis cannot be undone. The automatic project-number counter will NOT move backward.`);
     if (!confirmed) return;
-    projects = projects.filter(item => item.id !== editingProjectId);
-    saveProjects();
-    render();
-    closeEditProject();
+    await withCloud(async()=>{
+      await deleteTrackerProject(project.id,project.version);
+      closeEditProject();
+      await syncCloud('Project removed');
+    });
   });
 
   document.querySelectorAll('.setting-add-row').forEach(form => {
-    form.addEventListener('submit', event => {
+    form.addEventListener('submit', async event => {
       event.preventDefault();
       const input = form.querySelector('input');
-      if (addSetting(form.dataset.setting, input.value)) input.value = '';
+      await withCloud(async()=>{
+        if (await addSetting(form.dataset.setting,input.value)) input.value='';
+      });
     });
   });
 
@@ -1405,7 +1375,7 @@
     if (event.target === saveFilterDialog) saveFilterDialog.close();
   });
 
-  document.getElementById('saveFilterForm').addEventListener('submit', event => {
+  document.getElementById('saveFilterForm').addEventListener('submit', async event => {
     event.preventDefault();
     const input = document.getElementById('savedFilterName');
     const error = document.getElementById('saveFilterError');
@@ -1426,24 +1396,66 @@
       filters: Object.fromEntries(Object.entries(activeFilters).map(([key, values]) => [key, [...values]])),
       createdAt: new Date().toISOString()
     };
-    savedFilters.push(saved);
-    saveSavedFilters();
-    activeSavedFilterId = saved.id;
-    saveFilterDialog.close();
-    renderFilterControls();
+    await withCloud(async()=>{
+      await addTrackerFilter(saved);
+      savedFilters.push(saved);
+      activeSavedFilterId=saved.id;
+      saveFilterDialog.close();
+      renderFilterControls();
+    });
   });
 
-  document.getElementById('deleteSavedFilter').addEventListener('click', () => {
+  document.getElementById('deleteSavedFilter').addEventListener('click', async () => {
     const saved = savedFilters.find(item => item.id === activeSavedFilterId);
     if (!saved) return;
     if (!window.confirm(`Delete saved filter “${saved.name}”?`)) return;
-    savedFilters = savedFilters.filter(item => item.id !== saved.id);
-    saveSavedFilters();
-    activeSavedFilterId = '';
-    renderSavedFilterSelect();
+    await withCloud(async()=>{
+      await removeTrackerFilter(saved.id);
+      savedFilters=savedFilters.filter(item=>item.id!==saved.id);
+      activeSavedFilterId='';
+      renderSavedFilterSelect();
+    });
   });
 
   setupCombos();
-  prepareNewProjectForm(true);
-  render();
+  setCloudReady(false);
+  document.getElementById('trackerLoginForm').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const button=e.target.querySelector('button[type="submit"]');
+    button.disabled=true;
+    const err=document.getElementById('trackerLoginError');
+    err.textContent='';
+    try {
+      await signInWithPassword(document.getElementById('trackerLoginEmail').value,document.getElementById('trackerLoginPassword').value);
+      await syncCloud('Signed in · shared data loaded');
+      document.getElementById('trackerLogin').classList.add('hidden');
+      prepareNewProjectForm(true);
+    } catch(error) { err.textContent=error.message; cloudMessage(error.message,true); }
+    finally { button.disabled=false; }
+  });
+  document.getElementById('trackerSignOut').addEventListener('click',async()=>{
+    if (!confirm('Sign out of the EWP Management session?')) return;
+    await signOut();
+    projects=[];settings={...defaultSettings};savedFilters=[];
+    setCloudReady(false);
+    document.getElementById('trackerLogin').classList.remove('hidden');
+    cloudMessage('Sign in required');
+  });
+  document.getElementById('trackerReload').addEventListener('click',()=>{
+    withCloud(()=>syncCloud('Shared data refreshed'));
+  });
+  window.addEventListener('focus',()=>{
+    if (cloudReady && document.visibilityState==='visible') syncCloud('Shared data refreshed').catch(()=>{});
+  });
+  (async()=>{
+    try {
+      const session=await restoreSession();
+      if (!session?.user) { document.getElementById('trackerLogin').classList.remove('hidden');cloudMessage('Sign in required');return; }
+      await syncCloud('Connected to shared Supabase');
+      prepareNewProjectForm(true);
+    } catch(error) {
+      document.getElementById('trackerLogin').classList.remove('hidden');
+      document.getElementById('trackerLoginError').textContent=error.message;
+    }
+  })();
 })();

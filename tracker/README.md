@@ -1,3 +1,5 @@
+**Phase 2 update:** Project Tracking now saves projects, work items, settings and saved filters in Supabase. See the repository root `README.md` and `phase2_migration.sql` for setup before deployment.
+
 # EWP Project Tracker V0.5
 
 Local browser prototype for EWP project/work tracking.
