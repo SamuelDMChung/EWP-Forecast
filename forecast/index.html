@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>EWP Material Forecast</title>
+  <link rel="stylesheet" href="styles.css?v=0.27" />
+  <link rel="stylesheet" href="../portal-nav.css?v=1.0-p1" />
+</head>
+<body>
+  <nav class="ewp-portal-nav" aria-label="EWP Management Portal navigation">
+    <a class="ewp-portal-nav__brand" href="../"><span class="ewp-portal-nav__mark" aria-hidden="true">E</span>EWP Management</a>
+    <div class="ewp-portal-nav__links">
+      <a class="ewp-portal-nav__link" href="../">Portal</a>
+      <a class="ewp-portal-nav__link" href="../tracker/">Project Tracking</a>
+      <a class="ewp-portal-nav__link" href="../forecast/" aria-current="page">EWP Forecast</a>
+    </div>
+  </nav>
+
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">EWP PURCHASING</p>
+      <h1>EWP Material Forecast</h1>
+      <p class="subtitle">Version 0.27 · Developed by Samuel Chung @ Griff</p>
+    </div>
+    <div class="header-actions">
+      <div class="user-chip" title="Signed-in Supabase account used for database access and edit history.">
+        <span class="user-chip-label">Signed in</span>
+        <strong id="currentUserName">Not signed in</strong>
+        <button id="signOutButton" type="button" class="user-change-button">Sign out</button>
+      </div>
+      <span id="cloudPill" class="cloud-pill connecting">Connecting to shared data…</span>
+      <button id="addProjectTop" class="button primary">+ Add Project</button>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Main navigation">
+    <button class="tab active" data-tab="intake">Add Project</button>
+    <button class="tab" data-tab="matrix">Projects &amp; Materials</button>
+    <button class="tab" data-tab="forecast">Delivery Forecast</button>
+    <button class="tab" data-tab="inventory">Inventory</button>
+    <button class="tab" data-tab="purchasing">Purchasing</button>
+    <button class="tab" data-tab="history">Entry History</button>
+  </nav>
+
+  <main>
+    <datalist id="inventoryMaterialOptions"></datalist>
+    <section id="intake" class="tab-panel active">
+      <div class="grid two-column">
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="step">STEP 1</p>
+              <h2>Upload Material List</h2>
+            </div>
+            <span class="privacy-pill">PDF parsed locally</span>
+          </div>
+          <label id="dropZone" class="drop-zone" for="pdfFile">
+            <input id="pdfFile" type="file" accept="application/pdf,.pdf" hidden />
+            <span class="drop-icon">PDF</span>
+            <strong>Drop an EWP material-list PDF here</strong>
+            <span>or click to choose a file</span>
+          </label>
+          <div id="parseStatus" class="status muted">No PDF selected.</div>
+          <p class="small-note">The PDF itself stays on this computer. The browser extracts Project #, Address (Project Name), Level and each level's <strong>Total Lengths</strong>, then only the structured project data is saved to the shared database.</p>
+        </article>
+
+        <article class="card">
+          <p class="step">STEP 2</p>
+          <h2>Project Defaults</h2>
+          <div class="form-grid">
+            <label>Project #<input id="projectNumber" autocomplete="off" placeholder="e.g. TC26238" /></label>
+            <label>Revision<input id="revision" autocomplete="off" placeholder="e.g. R1" /></label>
+            <label>Customer<input id="customer" autocomplete="off" placeholder="Customer" /></label>
+            <label>Sales<input id="sales" autocomplete="off" placeholder="Salesperson" /></label>
+            <label>Project Type
+              <select id="projectType">
+                <option value="multi">Multi-family</option>
+                <option value="sfd">SFD</option>
+              </select>
+            </label>
+            <label class="full">Address (Project Name)<textarea id="address" rows="2" placeholder="Address / project name"></textarea></label>
+            <div class="full intake-schedule-block">
+              <label class="delivery-date-field">Estimated Delivery Date<input id="projectDate" type="date" /></label>
+              <div class="schedule-options" aria-label="Delivery date scheduling options">
+                <label class="checkbox-row compact"><input id="applyDateAll" type="checkbox" /> Apply this delivery date to all levels</label>
+                <label class="checkbox-row compact"><input id="staggerWeekly" type="checkbox" /> Auto-set levels 1 week apart</label>
+              </div>
+              <p id="projectTypeHint" class="small-note schedule-hint">Multi-family levels appear in the 6-week delivery schedule. Estimated delivery dates are required.</p>
+              <div id="deliveryPreview" class="delivery-preview hidden" aria-live="polite"></div>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <article id="reviewCard" class="card hidden">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 3</p>
+            <h2>Review Extracted Levels &amp; Materials</h2>
+          </div>
+          <button id="addLevelBtn" class="button secondary">+ Add Level</button>
+        </div>
+        <div id="levelEditor" class="level-editor"></div>
+        <div id="intakeValidationMessage" class="form-validation hidden" role="alert"></div>
+        <div class="save-row">
+          <p class="small-note">Nothing is added to the shared forecast until you confirm the review. You can correct any parser result first.</p>
+          <button id="saveProject" class="button primary large">Review Project</button>
+        </div>
+      </article>
+    </section>
+
+    <section id="matrix" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Projects &amp; Materials</h2>
+        </div>
+        <div class="toolbar-actions">
+          <label class="checkbox-row compact"><input id="showDelivered" type="checkbox" /> Show fully delivered levels</label>
+          <button id="refreshCloud" class="button secondary">Refresh</button>
+          <button id="exportMatrixCsv" class="button secondary">Export CSV</button>
+        </div>
+      </div>
+      <div class="project-search-bar">
+        <label class="project-search-filter">
+          <select id="projectSearchField" aria-label="Project search field">
+            <option value="all">All fields</option>
+            <option value="sales">Sales</option>
+            <option value="customer">Customer</option>
+            <option value="projectNumber">Project #</option>
+            <option value="address">Project Name</option>
+            <option value="revision">Revision</option>
+          </select>
+        </label>
+        <div class="project-search-box">
+          <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+          <input id="projectSearch" type="search" placeholder="Search all project fields…" autocomplete="off" aria-label="Search projects" />
+          <button id="clearProjectSearch" type="button" class="search-clear hidden" aria-label="Clear project search">×</button>
+        </div>
+        <span id="projectSearchCount" class="project-search-count"></span>
+      </div>
+      <div id="matrixEmpty" class="empty-state">Add a project to build the material matrix.</div>
+      <div id="matrixTopScroll" class="matrix-top-scroll hidden" aria-label="Horizontal project scroll">
+        <div id="matrixTopScrollInner" class="matrix-top-scroll-inner"></div>
+      </div>
+      <div id="matrixWrap" class="table-wrap matrix-scroll-viewport hidden"></div>
+    </section>
+
+    <section id="forecast" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Delivery Forecast</h2>
+          <p>Multi-family packages are shown in the next six weeks by estimated delivery date. The monthly table remains available for the longer-term material outlook.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshCloudForecast" class="button secondary">Refresh</button>
+          <button id="exportForecastCsv" class="button secondary">Export Monthly CSV</button>
+        </div>
+      </div>
+
+      <article class="card forecast-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>6-Week Multi Delivery Schedule</h3>
+            <p class="small-note">Forecast = not yet committed. In Spruce = committed against inventory. A level can contain both until each Spruce order is delivered.</p>
+          </div>
+        </div>
+        <div id="weeklyScheduleEmpty" class="empty-state compact-empty">No outstanding Multi-family levels are overdue or due within the next six weeks.</div>
+        <div id="weeklyScheduleWrap" class="table-wrap hidden"></div>
+      </article>
+
+      <article class="card forecast-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>6-Week Material Demand</h3>
+            <p class="small-note">Uncommitted Multi-family forecast LF grouped by delivery week. Material already in Spruce is tracked separately as committed inventory.</p>
+          </div>
+        </div>
+        <div id="weeklyMaterialEmpty" class="empty-state compact-empty">No material demand falls within the next six weeks.</div>
+        <div id="weeklyMaterialWrap" class="table-wrap hidden"></div>
+      </article>
+
+      <article class="card forecast-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Monthly Material Forecast</h3>
+            <p class="small-note">Uncommitted dated quantities only. Material already in Spruce is tracked separately as committed inventory; SFD forecast quantities remain a purchasing buffer.</p>
+          </div>
+        </div>
+        <div id="forecastEmpty" class="empty-state compact-empty">Add dated projects to see the monthly forecast.</div>
+        <div id="forecastWrap" class="table-wrap hidden"></div>
+      </article>
+    </section>
+
+    <section id="inventory" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Inventory</h2>
+          <p>Maintain current Spruce stock and product lead times. Open purchase orders still flow into the calculations automatically.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshCloudInventory" class="button secondary">Refresh</button>
+          <button id="exportInventoryCsv" class="button secondary">Export CSV</button>
+        </div>
+      </div>
+
+      <div id="inventorySummary" class="inventory-summary"></div>
+
+      <article class="card inventory-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Stock Position</h3>
+            <p class="small-note">Stock Owed looks through each product's lead-time window. Projected Balance includes all outstanding demand and all open incoming material.</p>
+          </div>
+        </div>
+        <div class="inventory-add-material">
+          <input id="inventoryNewMaterial" list="inventoryMaterialOptions" placeholder="Add a material to inventory…" autocomplete="off" />
+          <button id="addInventoryMaterial" type="button" class="button secondary" disabled>+ Add to Inventory</button>
+        </div>
+        <div id="inventoryEmpty" class="empty-state compact-empty">Add a project or an inventory material to begin.</div>
+        <div id="inventoryWrap" class="table-wrap hidden"></div>
+      </article>
+    </section>
+
+    <section id="purchasing" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Purchasing</h2>
+          <p>Import mill PO Excel files, review the extracted material footage, then add the order to incoming inventory.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshCloudPurchasing" class="button secondary">Refresh</button>
+          <button id="exportPurchasingCsv" class="button secondary">Export Open POs</button>
+        </div>
+      </div>
+
+      <div class="grid two-column purchase-intake-grid">
+        <article class="card">
+          <div class="card-heading">
+            <div>
+              <p class="step">STEP 1</p>
+              <h2>Upload Purchase Order</h2>
+            </div>
+            <span class="privacy-pill">Excel parsed locally</span>
+          </div>
+          <label id="poDropZone" class="drop-zone" for="poFile">
+            <input id="poFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" hidden />
+            <span class="drop-icon">XLS</span>
+            <strong>Drop a mill PO Excel file here</strong>
+            <span>or click to choose a file</span>
+          </label>
+          <div id="purchaseParseStatus" class="status muted">No Excel file selected.</div>
+          <p class="small-note">The workbook stays on this computer. The importer reads PO #, order date, material descriptions and Lineal footage. Materials are matched by <strong>product + size</strong>; PO shorthand uses <strong>ML → LVL</strong> and <strong>TS → LSL</strong>, while nonessential descriptors such as <strong>SSS</strong> or grade text do not create a separate inventory material.</p>
+        </article>
+
+        <article class="card">
+          <p class="step">STEP 2</p>
+          <h2>PO Details</h2>
+          <div class="form-grid">
+            <label>PO #<input id="purchasePoNumber" autocomplete="off" placeholder="e.g. 2609-P77940" /></label>
+            <label>PO Date<input id="purchaseOrderDate" type="date" /></label>
+            <label>Expected Arrival<input id="purchaseExpectedDate" type="date" /></label>
+            <label>Source File<input id="purchaseSourceFile" readonly placeholder="Excel filename" /></label>
+            <label class="full">Note<input id="purchaseNote" autocomplete="off" placeholder="Optional purchasing note" /></label>
+          </div>
+          <div id="purchaseDuplicateNotice" class="form-validation warning hidden"></div>
+        </article>
+      </div>
+
+      <article id="purchaseReviewCard" class="card hidden purchase-review-card">
+        <div class="card-heading">
+          <div>
+            <p class="step">STEP 3</p>
+            <h2>Review Extracted Materials</h2>
+          </div>
+          <button id="addPurchaseMaterial" class="button secondary" type="button">+ Add Material</button>
+        </div>
+        <div id="purchaseReviewSummary" class="purchase-review-summary"></div>
+        <div id="purchaseReviewWrap" class="table-wrap"></div>
+        <div id="purchaseValidationMessage" class="form-validation hidden" role="alert"></div>
+        <div class="save-row purchase-save-row">
+          <button id="clearPurchaseDraft" class="button secondary" type="button">Clear</button>
+          <button id="savePurchaseOrder" class="button primary large" type="button">Add Purchase Order</button>
+        </div>
+      </article>
+
+      <article class="card inventory-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Manual / Transfer Incoming</h3>
+            <p class="small-note">For incoming material that does not come from a PO workbook.</p>
+          </div>
+        </div>
+        <div class="incoming-form-grid">
+          <label>Material<input id="incomingMaterial" list="inventoryMaterialOptions" placeholder="Material" autocomplete="off" /></label>
+          <label>Quantity (LF)<input id="incomingLf" type="number" min="0" step="0.01" /></label>
+          <label>Expected Date<input id="incomingDate" type="date" /></label>
+          <label>Reference<input id="incomingReference" placeholder="Optional" /></label>
+          <label class="incoming-note">Note<input id="incomingNote" placeholder="Optional" /></label>
+          <button id="addIncomingOrder" type="button" class="button primary incoming-add">+ Add Incoming</button>
+        </div>
+      </article>
+
+      <article class="card inventory-card">
+        <div class="section-heading-row">
+          <div>
+            <h3>Open Purchase Orders &amp; Incoming</h3>
+            <p class="small-note">Receiving a line adds its remaining LF to On Hand. Imported PO length/package detail is retained for reference.</p>
+          </div>
+        </div>
+        <div id="purchasingSummary" class="inventory-summary"></div>
+        <div id="incomingOrdersEmpty" class="empty-state compact-empty">No open purchase orders or incoming material.</div>
+        <div id="incomingOrdersWrap" class="table-wrap hidden"></div>
+      </article>
+    </section>
+
+    <section id="history" class="tab-panel">
+      <div class="toolbar">
+        <div>
+          <h2>Entry History</h2>
+          <p>Review shared project, planning, inventory, purchasing and delivery changes recorded by signed-in users.</p>
+        </div>
+        <div class="toolbar-actions">
+          <button id="refreshHistory" class="button secondary">Refresh</button>
+        </div>
+      </div>
+      <div class="history-filters">
+        <label>Search<input id="historySearch" type="search" placeholder="Project, level, material or detail" /></label>
+        <label>User<select id="historyUserFilter"><option value="">All users</option></select></label>
+        <label>Action<select id="historyActionFilter"><option value="">All actions</option></select></label>
+        <label>Date<input id="historyDateFilter" type="date" /></label>
+        <button id="clearHistoryFilters" type="button" class="button ghost history-clear">Clear filters</button>
+      </div>
+      <div id="historyStatus" class="status muted">Open this tab to load entry history.</div>
+      <div id="historyWrap" class="table-wrap hidden"></div>
+      <div class="history-pagination">
+        <button id="loadOlderHistory" type="button" class="button secondary hidden">Load 100 older entries</button>
+      </div>
+    </section>
+  </main>
+
+
+
+  <dialog id="projectReviewDialog" class="dialog review-dialog" aria-labelledby="projectReviewTitle">
+    <form method="dialog" id="projectReviewForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">REVIEW</p>
+          <h2 id="projectReviewTitle">Review Project Entry</h2>
+          <p class="muted">Please review the project and delivery schedule before saving.</p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Back to project entry">×</button>
+      </div>
+      <div id="projectReviewContent" class="project-review-content"></div>
+      <div class="dialog-footer">
+        <button value="cancel" class="button secondary">Back</button>
+        <button id="confirmProjectSave" type="button" class="button primary large">Confirm &amp; Add Project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deliveryDialog" class="dialog">
+    <form method="dialog" id="deliveryForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">SPRUCE / DELIVERY</p>
+          <h2 id="deliveryTitle">Manage Level</h2>
+          <p id="deliverySubtitle" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="delivery-estimate-control planning-control">
+        <label>Estimated Delivery Date<input id="forecastDateEdit" type="date" /></label>
+        <span id="forecastDateStatus" class="small-note inline-save-status" aria-live="polite">Auto-saves</span>
+      </div>
+
+      <div class="spruce-mode-row">
+        <div class="spruce-mode-switch" role="group" aria-label="Level material action">
+          <button id="spruceModeEntry" type="button" class="spruce-mode-button active" data-mode="spruce">Put in Spruce</button>
+          <button id="spruceModeDelivery" type="button" class="spruce-mode-button" data-mode="deliver">Deliver</button>
+        </div>
+        <label class="manual-entry-toggle"><input id="spruceManualEntry" type="checkbox" /> <span>Manual Entry</span></label>
+      </div>
+      <input id="sprucePdfFile" type="file" accept="application/pdf,.pdf" hidden style="display:none" />
+
+      <section id="spruceEntryPanel" class="spruce-action-panel">
+        <div id="manualEntryMeta" class="form-grid delivery-transaction-meta spruce-entry-meta spruce-entry-meta-three manual-entry-only hidden">
+          <label>Delivery Name<input id="spruceDeliveryCode" placeholder="e.g. L3D1" autocomplete="off" /></label>
+          <label class="checkbox-field last-package-field"><span>Last Package of the Level</span><input id="spruceLastPackage" type="checkbox" /></label>
+          <label>Spruce Order Note<input id="spruceOrderNote" placeholder="Optional — truck, phase, order note, etc." /></label>
+        </div>
+
+        <div class="spruce-import-card">
+          <div>
+            <strong>Import Delivery Material List</strong>
+            <p class="small-note">Reads EWP material from a Javelin Layout Material List PDF. Hangers and web stiffeners are ignored.</p>
+          </div>
+          <div class="spruce-import-actions">
+            <label id="chooseSprucePdf" for="sprucePdfFile" class="button secondary file-picker-label" role="button" tabindex="0">Import Delivery PDF</label>
+            <span id="spruceImportStatus" class="small-note"></span>
+          </div>
+        </div>
+
+        <div id="manualEntryActions" class="delivery-actions manual-entry-only hidden">
+          <button id="fillEntireLevel" type="button" class="button secondary">Use Entire Forecast</button>
+          <button id="clearDeliveryInputs" type="button" class="button ghost">Clear Quantities</button>
+        </div>
+
+        <div id="manualEntryMaterials" class="manual-entry-only hidden">
+          <div class="delivery-material-search">
+            <svg class="project-search-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z" /></svg>
+            <input id="deliveryMaterialSearch" type="search" placeholder="Search materials…" autocomplete="off" aria-label="Search delivery materials" />
+            <button id="clearDeliveryMaterialSearch" type="button" class="search-clear hidden" aria-label="Clear material search">×</button>
+          </div>
+
+          <div id="deliveryItems"></div>
+        </div>
+      </section>
+
+      <section id="spruceDeliveryPanel" class="spruce-action-panel hidden">
+        <div class="form-grid delivery-transaction-meta">
+          <label>Actual Delivery Date<input id="deliveryDate" type="date" /></label>
+          <label>Delivery Note<input id="deliveryNote" placeholder="Optional — truck, site note, etc." /></label>
+        </div>
+        <div class="spruce-delivery-panel-head">
+          <p class="small-note spruce-delivery-help">Choose an open Spruce order below. Delivery always moves that entire Spruce order to Delivered.</p>
+          <label id="chooseSprucePdfFromOrders" for="sprucePdfFile" class="button secondary file-picker-label" role="button" tabindex="0">Import / Revise Delivery PDF</label>
+        </div>
+        <div id="openSpruceOrders" class="spruce-order-list"></div>
+      </section>
+
+      <div class="dialog-footer">
+        <button id="removeLevel" type="button" class="button ghost danger-action">Remove Level from Project</button>
+        <button value="cancel" class="button ghost">Close</button>
+        <button id="saveSpruceOrder" type="button" class="button primary">Put in Spruce</button>
+      </div>
+
+      <div id="deliveryHistory" class="history"></div>
+    </form>
+  </dialog>
+
+  <dialog id="spruceImportReviewDialog" class="dialog spruce-import-review-dialog" aria-labelledby="spruceImportReviewTitle">
+    <form method="dialog" id="spruceImportReviewForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">IMPORT DELIVERY PDF</p>
+          <h2 id="spruceImportReviewTitle">Review Spruce Delivery</h2>
+          <p id="spruceImportReviewSummary" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid delivery-transaction-meta spruce-import-meta spruce-import-meta-three">
+        <label>Delivery Name<input id="spruceImportDeliveryCode" autocomplete="off" /></label>
+        <label class="checkbox-field last-package-field"><span>Last Package of the Level</span><input id="spruceImportLastPackage" type="checkbox" /></label>
+        <label>Note<input id="spruceImportNote" placeholder="Optional — truck, phase, order note, etc." /></label>
+      </div>
+
+      <div id="spruceImportWarnings" class="spruce-import-warnings hidden"></div>
+      <div id="spruceImportItems"></div>
+
+      <div class="dialog-footer">
+        <button value="cancel" class="button ghost">Back</button>
+        <button id="confirmSpruceImport" type="button" class="button primary">Put These Materials in Spruce</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="materialExclusionDialog" class="dialog compact-dialog" aria-labelledby="materialExclusionTitle">
+    <form method="dialog" id="materialExclusionForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">FORECAST</p>
+          <h2 id="materialExclusionTitle">Exclude Material from Forecast</h2>
+          <p id="materialExclusionSummary" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid exclusion-form-grid">
+        <label>Exclude from Forecast (LF)<input id="materialExcludedLf" type="number" min="0" step="0.01" /></label>
+        <label>Reason
+          <select id="materialExclusionReason">
+            <option value="Customer supplied / pre-ordered">Customer supplied / pre-ordered</option>
+            <option value="No longer required">No longer required</option>
+            <option value="Duplicate">Duplicate</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label class="full">Note<input id="materialExclusionNote" placeholder="Optional note" /></label>
+      </div>
+      <p class="small-note exclusion-help">The original PDF quantity stays unchanged. Excluded LF is removed only from the outstanding forecast and can be restored later.</p>
+
+      <div class="dialog-footer">
+        <button id="restoreMaterialForecast" type="button" class="button secondary hidden">Restore to Forecast</button>
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="saveMaterialExclusion" type="button" class="button primary">Save Adjustment</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="projectEditDialog" class="dialog compact-dialog">
+    <form method="dialog" id="projectEditForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step">PROJECT</p>
+          <h2>Edit Project</h2>
+          <p class="muted">Update the project-wide fields shown on every level card.</p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid">
+        <label>Project #<input id="editProjectNumber" autocomplete="off" /></label>
+        <label>Revision<input id="editRevision" autocomplete="off" /></label>
+        <label>Customer<input id="editCustomer" autocomplete="off" /></label>
+        <label>Sales<input id="editSales" autocomplete="off" /></label>
+        <label>Project Type
+          <select id="editProjectType">
+            <option value="multi">Multi-family</option>
+            <option value="sfd">SFD</option>
+          </select>
+        </label>
+        <label class="full">Address (Project Name)<textarea id="editAddress" rows="2"></textarea></label>
+        <label>Project Default Delivery Date<input id="editProjectDate" type="date" /></label>
+        <label class="checkbox-row"><input id="editApplyDateAll" type="checkbox" /> Apply this date to all levels</label>
+      </div>
+
+      <div class="dialog-footer">
+        <button id="openDeleteProject" type="button" class="button ghost danger-action">Delete Project…</button>
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="saveProjectEdit" type="button" class="button primary">Save Project</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteProjectDialog" class="dialog compact-dialog">
+    <form method="dialog" id="deleteProjectForm">
+      <div class="dialog-header">
+        <div>
+          <p class="step danger-text">DELETE PROJECT</p>
+          <h2 id="deleteProjectTitle">Delete Project</h2>
+          <p id="deleteProjectSummary" class="muted"></p>
+        </div>
+        <button value="cancel" class="icon-button" aria-label="Close">×</button>
+      </div>
+
+      <div class="delete-project-warning">
+        This permanently removes the active project, all of its levels, materials and delivery records. The deletion itself remains in Entry History.
+      </div>
+
+      <div class="form-grid">
+        <label>Reason (optional)
+          <select id="deleteProjectReason">
+            <option value="">No reason</option>
+            <option value="Wrong entry">Wrong entry</option>
+            <option value="Cancelled project">Cancelled project</option>
+            <option value="Duplicate">Duplicate</option>
+            <option value="Other">Other</option>
+          </select>
+        </label>
+        <label class="full">Additional note (optional)<textarea id="deleteProjectNote" rows="2" placeholder="Add context for Entry History"></textarea></label>
+      </div>
+
+      <div class="dialog-footer">
+        <button value="cancel" class="button ghost">Cancel</button>
+        <button id="confirmDeleteProject" type="button" class="button danger-button">Delete Project Permanently</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="loginGate" class="auth-gate hidden" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+    <div class="auth-card">
+      <form id="loginForm">
+        <div class="dialog-header">
+          <div>
+            <p class="step">SECURE TEAM ACCESS</p>
+            <h2 id="loginTitle">Sign in to EWP Material Forecast</h2>
+            <p class="muted">Use the email and password created for you by the database administrator.</p>
+          </div>
+        </div>
+        <div class="login-fields">
+          <label>Email
+            <input id="loginEmail" type="email" autocomplete="username" placeholder="name@company.com" required />
+          </label>
+          <label>Password
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
+          </label>
+        </div>
+        <p id="loginError" class="login-error hidden" role="alert"></p>
+        <p class="small-note">Public sign-up is disabled. Ask the tool administrator to create an account if you do not have one.</p>
+        <div class="dialog-footer">
+          <button id="loginButton" type="submit" class="button primary">Sign in</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="app.mjs?v=0.27"></script>
+</body>
+</html>

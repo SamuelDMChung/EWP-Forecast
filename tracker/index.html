@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EWP Project Tracker — V0.5</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="../portal-nav.css?v=1.0-p1" />
+</head>
+<body>
+  <nav class="ewp-portal-nav" aria-label="EWP Management Portal navigation">
+    <a class="ewp-portal-nav__brand" href="../"><span class="ewp-portal-nav__mark" aria-hidden="true">E</span>EWP Management</a>
+    <div class="ewp-portal-nav__links">
+      <a class="ewp-portal-nav__link" href="../">Portal</a>
+      <a class="ewp-portal-nav__link" href="../tracker/" aria-current="page">Project Tracking</a>
+      <a class="ewp-portal-nav__link" href="../forecast/">EWP Forecast</a>
+    </div>
+  </nav>
+
+  <header class="site-header">
+    <div class="brand-wrap">
+      <div class="brand-kicker">EWP PROJECT TRACKING</div>
+      <h1>EWP Project Tracker</h1>
+      <div class="version-line">Version 0.5 · Developed by Samuel Chung @ Griff</div>
+      <button id="settingsButton" class="settings-gear" type="button" aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <nav class="main-nav" aria-label="Primary navigation">
+    <div class="nav-inner">
+      <div class="nav-tabs-left">
+        <button class="nav-tab active" data-view="board">Board</button>
+        <button class="nav-tab" data-view="list">List</button>
+      </div>
+    </div>
+  </nav>
+
+  <main class="page-shell">
+    <section id="sharedFilterBar" class="filter-shell" aria-label="Project search and filters">
+      <div class="filter-toolbar">
+        <div class="project-search-wrap">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="projectSearch" type="search" placeholder="Search project #, address, customer, sales, assignee, task..." autocomplete="off" />
+        </div>
+        <button id="filterToggleButton" class="btn btn-filter" type="button">Filters <span id="activeFilterCount" class="filter-count hidden">0</span></button>
+        <div class="saved-filter-group">
+          <select id="savedFilterSelect" aria-label="Saved filters">
+            <option value="">Saved filters</option>
+          </select>
+          <button id="saveCurrentFilter" class="btn btn-secondary" type="button">Save Filter</button>
+          <button id="deleteSavedFilter" class="icon-btn compact-icon hidden" type="button" aria-label="Delete saved filter" title="Delete saved filter">×</button>
+        </div>
+        <button id="clearAllFilters" class="btn btn-linkish" type="button">Clear</button>
+        <div id="filterResultCount" class="filter-result-count">0 projects</div>
+      </div>
+
+      <div id="filterPanel" class="filter-panel hidden">
+        <div class="filter-grid">
+          <div class="multi-select-filter" data-filter="sales">
+            <span class="filter-label">Sales</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">All Sales</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="customer">
+            <span class="filter-label">Customer</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">All Customers</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="phase">
+            <span class="filter-label">Phase</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">All Phases</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="status">
+            <span class="filter-label">Status</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">All Statuses</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="aplRequired">
+            <span class="filter-label">APL Required</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">Any</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="largeTji">
+            <span class="filter-label">&gt;14&quot; TJI System</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">Any</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="assignee">
+            <span class="filter-label">Assignee</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">All Assignees</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+          <div class="multi-select-filter" data-filter="task">
+            <span class="filter-label">Task</span>
+            <button class="multi-filter-trigger" type="button"><span class="multi-filter-text">All Tasks</span><span>▾</span></button>
+            <div class="multi-filter-menu"></div>
+          </div>
+        </div>
+        <div class="filter-panel-footer">Selections within one category use OR. Different categories are combined with AND.</div>
+      </div>
+      <div id="activeFilterChips" class="active-filter-chips"></div>
+    </section>
+
+    <section id="view-board" class="view active">
+      <div class="section-heading board-heading">
+        <div>
+          <h2>Board</h2>
+          <p>Drag individual work items between Queue, In Progress, and Done. Projects can be split between multiple people without creating extra project numbers.</p>
+        </div>
+        <button class="btn btn-primary add-project-trigger">+ Add Project</button>
+      </div>
+
+      <div class="summary-row" aria-label="Project summary">
+        <div class="summary-card"><span>Queued Work</span><strong id="queueCount">0</strong></div>
+        <div class="summary-card"><span>Active Work</span><strong id="progressCount">0</strong></div>
+        <div class="summary-card"><span>Completed Work</span><strong id="doneCount">0</strong></div>
+        <div class="summary-card summary-wide"><span>Next Project Number</span><strong id="nextProjectNumber">—</strong></div>
+      </div>
+
+      <div class="board" id="board">
+        <section class="column" data-status="queue">
+          <div class="column-header">
+            <div><p class="column-kicker">NEW WORK</p><h3>Queue</h3></div>
+            <span class="count-badge" id="queueBadge">0</span>
+          </div>
+          <div class="dropzone" id="queueList" data-status="queue"></div>
+        </section>
+
+        <section class="column" data-status="in_progress">
+          <div class="column-header">
+            <div><p class="column-kicker">ACTIVE</p><h3>In Progress</h3></div>
+            <span class="count-badge" id="progressBadge">0</span>
+          </div>
+          <div class="dropzone" id="progressList" data-status="in_progress"></div>
+        </section>
+
+        <section class="column" data-status="done">
+          <div class="column-header">
+            <div><p class="column-kicker">COMPLETED</p><h3>Done</h3></div>
+            <span class="count-badge" id="doneBadge">0</span>
+          </div>
+          <div class="dropzone" id="doneList" data-status="done"></div>
+        </section>
+      </div>
+    </section>
+
+    <section id="view-list" class="view">
+      <div class="section-heading">
+        <div>
+          <h2>Project List</h2>
+          <p>All work items in one sheet. A project can appear on multiple rows when work is split between people. Click any row to edit the project.</p>
+        </div>
+        <button class="btn btn-primary add-project-trigger">+ Add Project</button>
+      </div>
+
+      <div class="content-card table-card">
+        <div class="table-scroll">
+          <table class="project-table">
+            <thead>
+              <tr>
+                <th>Project #</th>
+                <th>Address</th>
+                <th>Task</th>
+                <th>Status</th>
+                <th>Customer</th>
+                <th>Sales</th>
+                <th>Phase</th>
+                <th>Type</th>
+                <th>&gt;14&quot; TJI</th>
+                <th>APL</th>
+                <th>Submitted</th>
+                <th>Project Due</th>
+                <th>Task Due</th>
+                <th>Assignee</th>
+              </tr>
+            </thead>
+            <tbody id="projectTableBody"></tbody>
+          </table>
+        </div>
+        <div id="listEmptyState" class="list-empty hidden">No projects yet.</div>
+      </div>
+    </section>
+
+    <section id="view-add" class="view">
+      <div class="section-heading">
+        <div>
+          <h2>Add Project</h2>
+          <p>Create one project number, then add one or more independently assigned work items. New work items enter Queue automatically.</p>
+        </div>
+        <button id="cancelAddProjectTop" class="btn btn-secondary" type="button">Cancel</button>
+      </div>
+
+      <form id="projectForm" class="content-card form-card" novalidate>
+        <div class="form-section-title">Project Information</div>
+
+        <div class="form-grid">
+          <label class="full-field">
+            <span>Project Number</span>
+            <div class="project-number-input">
+              <span id="projectPrefix" class="number-prefix">TC26</span>
+              <input id="projectSuffix" name="projectSuffix" inputmode="numeric" maxlength="3" pattern="[0-9]{3}" autocomplete="off" required />
+            </div>
+            <small>The last 3 digits can be changed. Project numbers must be unique.</small>
+          </label>
+
+          <label>
+            <span>Sales</span>
+            <div class="combo-field" data-combo="sales">
+              <input id="sales" name="sales" type="text" placeholder="Choose or type a sales name" autocomplete="off" required />
+              <button class="combo-toggle" type="button" aria-label="Show sales names">▾</button>
+              <div class="combo-menu" role="listbox"></div>
+            </div>
+          </label>
+
+          <label>
+            <span>Customer</span>
+            <input id="customer" name="customer" type="text" placeholder="Customer name" required />
+          </label>
+
+          <label class="full-field">
+            <span>Address</span>
+            <input id="address" name="address" type="text" placeholder="Project address" required />
+          </label>
+
+          <label>
+            <span>Phase</span>
+            <select id="phase" name="phase" required>
+              <option value="Awarded">Awarded</option>
+              <option value="Bidding">Bidding</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Project Type</span>
+            <select id="projectType" name="projectType" required>
+              <option value="SFD">SFD</option>
+              <option value="Multi">Multi</option>
+              <option value="Others">Others</option>
+            </select>
+          </label>
+
+          <label id="projectTypeOtherWrap" class="full-field conditional-field hidden">
+            <span>Specify Project Type</span>
+            <input id="projectTypeOther" name="projectTypeOther" type="text" placeholder="Enter project type" />
+          </label>
+
+          <fieldset class="choice-field">
+            <legend>&gt;14&quot; TJI System</legend>
+            <label><input type="radio" name="largeTji" value="Yes" /> Yes</label>
+            <label><input type="radio" name="largeTji" value="No" checked /> No</label>
+          </fieldset>
+
+          <fieldset class="choice-field">
+            <legend>APL Required</legend>
+            <label><input type="radio" name="aplRequired" value="Yes" /> Yes</label>
+            <label><input type="radio" name="aplRequired" value="No" checked /> No</label>
+          </fieldset>
+
+          <label>
+            <span>Date Submitted</span>
+            <input id="dateSubmitted" name="dateSubmitted" type="date" required />
+          </label>
+
+          <label>
+            <span>Due Date</span>
+            <input id="dueDate" name="dueDate" type="date" required />
+          </label>
+
+          <div class="full-field work-items-section">
+            <div class="work-items-heading">
+              <div>
+                <h3>Work Items</h3>
+                <p>Split this project into separate tasks and assignees while keeping one project number.</p>
+              </div>
+              <button id="addNewWorkItem" class="btn btn-secondary" type="button">+ Add Task</button>
+            </div>
+            <div id="newWorkItemsContainer" class="work-items-container"></div>
+          </div>
+        </div>
+
+        <p id="formError" class="form-error" role="alert"></p>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelAddProject">Cancel</button>
+          <button type="button" class="btn btn-secondary" id="clearProjectForm">Clear</button>
+          <button type="submit" class="btn btn-primary">Create Project</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="view-settings" class="view">
+      <div class="section-heading">
+        <div>
+          <h2>Settings</h2>
+          <p>Manage the names and task options used when projects are created or edited.</p>
+        </div>
+        <button id="closeSettingsView" class="btn btn-secondary" type="button">Back</button>
+      </div>
+
+      <div class="settings-grid">
+        <section class="content-card setting-card">
+          <div class="setting-title"><h3>Sales Names</h3><span id="salesSettingsCount" class="settings-count">0</span></div>
+          <p>These appear in the Sales dropdown. Users can still type a name that is not on the list.</p>
+          <form class="setting-add-row" data-setting="sales">
+            <input type="text" placeholder="Add sales name" aria-label="Add sales name" />
+            <button class="btn btn-primary" type="submit">Add</button>
+          </form>
+          <div id="salesSettingsList" class="setting-list"></div>
+        </section>
+
+        <section class="content-card setting-card">
+          <div class="setting-title"><h3>Assignee Names</h3><span id="assigneeSettingsCount" class="settings-count">0</span></div>
+          <p>These appear in the Assignee dropdown. Users can still type a name that is not on the list.</p>
+          <form class="setting-add-row" data-setting="assignees">
+            <input type="text" placeholder="Add assignee name" aria-label="Add assignee name" />
+            <button class="btn btn-primary" type="submit">Add</button>
+          </form>
+          <div id="assigneeSettingsList" class="setting-list"></div>
+        </section>
+
+        <section class="content-card setting-card">
+          <div class="setting-title"><h3>Tasks</h3><span id="taskSettingsCount" class="settings-count">0</span></div>
+          <p>Tasks appear as a dropdown when creating or editing project work items.</p>
+          <form class="setting-add-row" data-setting="tasks">
+            <input type="text" placeholder="Add task" aria-label="Add task" />
+            <button class="btn btn-primary" type="submit">Add</button>
+          </form>
+          <div id="taskSettingsList" class="setting-list"></div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="saveFilterDialog" class="modal small-modal">
+    <form id="saveFilterForm" method="dialog" novalidate>
+      <div class="modal-header">
+        <div>
+          <div class="brand-kicker">SAVED FILTER</div>
+          <h2>Save Current Filter</h2>
+          <p>Saved filters keep the rules, so future matching work items are included automatically.</p>
+        </div>
+        <button type="button" class="icon-btn" id="closeSaveFilterDialog" aria-label="Close">×</button>
+      </div>
+      <label>
+        <span>Filter Name</span>
+        <input id="savedFilterName" type="text" maxlength="60" placeholder="e.g. My Active Jobs" required />
+      </label>
+      <p id="saveFilterError" class="form-error" role="alert"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-secondary" id="cancelSaveFilter">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Filter</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog" class="modal">
+    <form id="editForm" method="dialog" novalidate>
+      <div class="modal-header">
+        <div>
+          <div class="brand-kicker">EDIT PROJECT</div>
+          <h2 id="editDialogTitle">Project</h2>
+          <p>Update project details and its independently assigned work items below.</p>
+        </div>
+        <button type="button" class="icon-btn" id="closeEditDialog" aria-label="Close">×</button>
+      </div>
+
+      <div class="form-grid">
+        <label class="full-field">
+          <span>Project Number</span>
+          <div class="project-number-input">
+            <span id="editProjectPrefix" class="number-prefix">TC26</span>
+            <input id="editProjectSuffix" inputmode="numeric" maxlength="3" pattern="[0-9]{3}" required />
+          </div>
+          <small>The last 3 digits can be changed, but duplicates are not allowed.</small>
+        </label>
+
+        <label>
+          <span>Sales</span>
+          <div class="combo-field" data-combo="sales">
+            <input id="editSales" type="text" autocomplete="off" required />
+            <button class="combo-toggle" type="button" aria-label="Show sales names">▾</button>
+            <div class="combo-menu" role="listbox"></div>
+          </div>
+        </label>
+        <label><span>Customer</span><input id="editCustomer" type="text" required /></label>
+        <label class="full-field"><span>Address</span><input id="editAddress" type="text" required /></label>
+
+        <label>
+          <span>Phase</span>
+          <select id="editPhase" required><option value="Awarded">Awarded</option><option value="Bidding">Bidding</option></select>
+        </label>
+
+        <label>
+          <span>Project Type</span>
+          <select id="editProjectType" required><option value="SFD">SFD</option><option value="Multi">Multi</option><option value="Others">Others</option></select>
+        </label>
+
+        <label id="editProjectTypeOtherWrap" class="full-field conditional-field hidden">
+          <span>Specify Project Type</span>
+          <input id="editProjectTypeOther" type="text" />
+        </label>
+
+        <fieldset class="choice-field">
+          <legend>&gt;14&quot; TJI System</legend>
+          <label><input type="radio" name="editLargeTji" value="Yes" /> Yes</label>
+          <label><input type="radio" name="editLargeTji" value="No" /> No</label>
+        </fieldset>
+
+        <fieldset class="choice-field">
+          <legend>APL Required</legend>
+          <label><input type="radio" name="editAplRequired" value="Yes" /> Yes</label>
+          <label><input type="radio" name="editAplRequired" value="No" /> No</label>
+        </fieldset>
+
+        <label><span>Date Submitted</span><input id="editDateSubmitted" type="date" required /></label>
+        <label><span>Due Date</span><input id="editDueDate" type="date" required /></label>
+
+        <div class="full-field work-items-section edit-work-items-section">
+          <div class="work-items-heading">
+            <div>
+              <h3>Work Items</h3>
+              <p>Each task has its own assignee, status, and optional due date. A blank task due date uses the project due date.</p>
+            </div>
+            <button id="addEditWorkItem" class="btn btn-secondary" type="button">+ Add Task</button>
+          </div>
+          <div id="editWorkItemsContainer" class="work-items-container"></div>
+        </div>
+      </div>
+
+      <p id="editError" class="form-error" role="alert"></p>
+      <div class="modal-actions modal-actions-split">
+        <button type="button" class="btn btn-danger" id="deleteProject">Delete Project</button>
+        <div class="modal-actions-right">
+          <button type="button" class="btn btn-secondary" id="cancelEdit">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+
+  <template id="projectCardTemplate">
+    <article class="project-card" draggable="true" title="Click to edit · Drag to change status">
+      <h4 class="card-heading">
+        <span class="project-number"></span><span class="separator">|</span><span class="project-address"></span><span class="separator">|</span><span class="project-task"></span>
+      </h4>
+      <div class="card-secondary-line">
+        <strong class="customer-name"></strong>
+        <span class="phase-pill"></span>
+      </div>
+      <div class="meta-row">
+        <span class="project-type"></span>
+        <span class="tji-indicator"></span>
+        <span class="apl-indicator"></span>
+      </div>
+      <div class="card-divider"></div>
+      <div class="card-detail"><span>Due</span><strong class="due-date"></strong></div>
+      <div class="card-detail"><span>Assignee</span><strong class="assignee"></strong></div>
+      <div class="card-detail"><span>Sales</span><strong class="sales"></strong></div>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
